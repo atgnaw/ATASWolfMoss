@@ -9,8 +9,11 @@ namespace ATASOrderLogStrategy
 {
     public class OrderTradeRecorder : ChartStrategy
     {
-        private readonly string _logFilePath = @"C:\Users\Administrator\Documents\ATASLogs\TradeLog.txt";
-        private Dictionary<string, decimal> _position = new Dictionary<string, decimal>();
+        private readonly string _logFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "ATASLogs",
+            "TradeLog.txt");
+        private Dictionary<string, decimal> _lastNetPositions = new Dictionary<string, decimal>();
         private MT5WebSocketClient _MT5WebSocketClient = new MT5WebSocketClient();
         private bool _isInitialized = false;
         private bool _disposed = false;
@@ -105,36 +108,24 @@ namespace ATASOrderLogStrategy
             var Securityid = position.Security.ToString();
             // 获取当前持仓信息
             string logEntry = $"{DateTime.Now}: 持仓变化 - 合约: {position.Security},数量: {position.Volume}, 均价: {position.AveragePrice}, IsInPosition: {position.IsInPosition}\n";
-            if (position.Volume!=0 && !_position.ContainsKey(Securityid))
-            {
-                _position.Add(Securityid, position.Volume);
-                if (position.Volume>0)
-                {
-                    //开多
-                    _ = SendPositionUpdateAsync(position, "开多");
-                }
-                else
-                {
-                    //开空
-                    _ = SendPositionUpdateAsync(position, "开空");
-                }
-                File.AppendAllText(_logFilePath,"开仓"+ logEntry);
 
-            }
-            else if(position.Volume == 0 && _position.ContainsKey(Securityid))
+            if (_lastNetPositions.TryGetValue(Securityid, out var lastVolume) && lastVolume == position.Volume)
             {
-                _position.Remove(Securityid);
-                _ = SendPositionUpdateAsync(position, "平仓");
-                File.AppendAllText(_logFilePath, "平仓" + logEntry);
+                File.AppendAllText(_logFilePath, "净仓未变化，跳过同步 " + logEntry);
+                return;
             }
+
+            _lastNetPositions[Securityid] = position.Volume;
+            _ = SendPositionSyncAsync(position);
+            File.AppendAllText(_logFilePath, "同步净仓" + logEntry);
         }
 
-        // 异步发送持仓更新信息
-        private async Task SendPositionUpdateAsync(Position position, string actionType)
+        // 异步发送当前净仓目标
+        private async Task SendPositionSyncAsync(Position position)
         {
             if (!_isInitialized || !_MT5WebSocketClient.IsConnected)
             {
-                File.AppendAllText(_logFilePath, "WebSocket未就绪，无法发送持仓更新\n");
+                File.AppendAllText(_logFilePath, "WebSocket未就绪，无法发送净仓同步\n");
                 return;
             }
 
@@ -142,27 +133,26 @@ namespace ATASOrderLogStrategy
             {
                 var positionInfo = new
                 {
-                    action = actionType,
-                    security = position.Security.ToString(),
-                    volume = position.Volume,
-                    averagePrice = position.AveragePrice,
-                    isInPosition = position.IsInPosition,
+                    symbol = position.Security.ToString(),
+                    net_volume = position.Volume,
+                    average_price = position.AveragePrice,
+                    source = "ATAS",
                     timestamp = DateTime.Now
                 };
 
-                bool success = await _MT5WebSocketClient.SendRequest("position_update", positionInfo);
+                bool success = await _MT5WebSocketClient.SendRequest("sync_position", positionInfo);
                 if (success)
                 {
-                    File.AppendAllText(_logFilePath, $"已发送{actionType}消息到WebSocket服务器\n");
+                    File.AppendAllText(_logFilePath, $"已发送净仓同步消息到WebSocket服务器，目标净仓: {position.Volume}\n");
                 }
                 else
                 {
-                    File.AppendAllText(_logFilePath, $"发送{actionType}消息失败\n");
+                    File.AppendAllText(_logFilePath, "发送净仓同步消息失败\n");
                 }
             }
             catch (Exception ex)
             {
-                File.AppendAllText(_logFilePath, $"发送持仓更新消息异常: {ex.Message}\n");
+                File.AppendAllText(_logFilePath, $"发送净仓同步消息异常: {ex.Message}\n");
             }
         }
 

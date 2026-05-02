@@ -10,6 +10,7 @@ import websockets
 import MetaTrader5 as mt5
 from mt5_trader import MT5Trader
 from symbol_mapper import get_mapper
+from sync_contract import parse_target_units
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -18,9 +19,12 @@ logger = logging.getLogger(__name__)
 # 保存所有已连接的WebSocket客户端
 connected_clients = set()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+
 # 加载配置
 try:
-    with open('config.json', 'r') as f:
+    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = json.load(f)
 except FileNotFoundError:
     logger.error("配置文件不存在！")
@@ -33,7 +37,7 @@ except FileNotFoundError:
     }
 
 # 获取符号映射配置
-symbol_mapper = get_mapper()
+symbol_mapper = get_mapper(CONFIG_PATH)
 
 # 初始化MT5交易者
 trader = None
@@ -100,6 +104,8 @@ async def handle_message(websocket, message):
             response = await health_check(params)
         elif action == 'get_account_info':
             response = await get_account_info(params)
+        elif action == 'sync_position':
+            response = await sync_position(params)
         elif action == 'open_position':
             response = await open_position(params)
         elif action == 'close_position_by_ticket':
@@ -157,6 +163,56 @@ async def get_account_info(params):
     
     except Exception as e:
         error_message = f"获取账户信息异常: {str(e)}"
+        logger.exception(error_message)
+        return {'status': 'error', 'message': error_message}
+
+async def sync_position(params):
+    """按ATAS目标净仓同步MT5复制器单位ticket。"""
+    if not trader or not trader.is_connected():
+        return {'status': 'error', 'message': 'MT5未连接'}
+
+    try:
+        external_symbol = params.get('symbol')
+        if not external_symbol:
+            return {'status': 'error', 'message': '缺少必要参数: symbol'}
+
+        if 'net_volume' not in params:
+            return {'status': 'error', 'message': '缺少必要参数: net_volume'}
+
+        try:
+            target_units = parse_target_units(params.get('net_volume'))
+        except ValueError as exc:
+            return {'status': 'error', 'message': str(exc)}
+
+        symbol = symbol_mapper.map_to_mt5(external_symbol)
+        unit_volume = float(symbol_mapper.get_unit_volume(external_symbol))
+
+        logger.info(
+            f"开始同步ATAS净仓: 外部品种={external_symbol}, MT5品种={symbol}, "
+            f"目标单位={target_units}, 单ticket手数={unit_volume}"
+        )
+
+        loop = asyncio.get_running_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: trader.sync_position_units(
+                    symbol=symbol,
+                    target_units=target_units,
+                    unit_volume=unit_volume,
+                    source_symbol=external_symbol,
+                ),
+            ),
+            timeout=180,
+        )
+        return response
+
+    except asyncio.TimeoutError:
+        error_message = "同步净仓超时，请检查MT5终端和交易服务器状态"
+        logger.error(error_message)
+        return {'status': 'error', 'message': error_message}
+    except Exception as e:
+        error_message = f"同步净仓异常: {str(e)}"
         logger.exception(error_message)
         return {'status': 'error', 'message': error_message}
 
@@ -404,7 +460,7 @@ async def start_server():
     asyncio.create_task(periodic_tasks())
     
     # 启动WebSocket服务器
-    host = "0.0.0.0"
+    host = "127.0.0.1"
     port = 8766
     
     # 设置WebSocket服务器选项，增加ping超时时间

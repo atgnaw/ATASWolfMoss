@@ -7,10 +7,12 @@
     "symbol_mapping": {
         "BTCUSDT": {
             "symbol": "BTCUSDm",
+            "unit_volume": 1,
             "volume_ratio": 1
         },
         "Gold": {
             "symbol": "XAUUSD",
+            "unit_volume": 0.01,
             "volume_ratio": 0.01
         }
     }

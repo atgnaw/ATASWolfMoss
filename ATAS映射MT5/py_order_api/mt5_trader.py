@@ -3,9 +3,14 @@ import logging
 import time
 from datetime import datetime
 from typing import Union, Dict, List, Any, Optional
+from position_sync import BUY, SELL, net_units, plan_unit_sync
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+COPY_MAGIC = 123456
+COPY_COMMENT_PREFIX = "ATAS_SYNC"
+COPY_CLOSE_COMMENT = "ATAS_SYNC_CLOSE"
 
 class MT5Trader:
     """MetaTrader 5交易类，封装MT5交易相关功能"""
@@ -126,6 +131,158 @@ class MT5Trader:
             bool: 连接状态
         """
         return self.initialized and mt5.terminal_info() is not None
+
+    def is_hedging_account(self) -> bool:
+        """Return whether the connected MT5 account supports hedged positions."""
+        account_info = mt5.account_info()
+        if not account_info:
+            logger.error("无法获取MT5账户信息，无法验证是否为hedging账户")
+            return False
+
+        margin_mode = getattr(account_info, "margin_mode", None)
+        hedging_mode = getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", None)
+        if margin_mode is None or hedging_mode is None:
+            logger.warning("当前MetaTrader5库无法验证账户margin_mode，继续执行同步")
+            return True
+
+        if margin_mode != hedging_mode:
+            logger.error(f"MT5账户不是hedging模式，margin_mode={margin_mode}, hedging_mode={hedging_mode}")
+            return False
+
+        return True
+
+    def _copy_comment(self, source_symbol: str = "") -> str:
+        if source_symbol:
+            return f"{COPY_COMMENT_PREFIX}|{source_symbol}"
+        return COPY_COMMENT_PREFIX
+
+    def _is_copy_position(self, position: Any) -> bool:
+        magic = getattr(position, "magic", None)
+        comment = str(getattr(position, "comment", ""))
+        return magic == COPY_MAGIC and comment.startswith(COPY_COMMENT_PREFIX)
+
+    def _copy_position_to_dict(self, position: Any) -> Dict[str, Any]:
+        position_type = BUY if position.type == mt5.POSITION_TYPE_BUY else SELL
+        return {
+            "ticket": int(position.ticket),
+            "type": position_type,
+            "volume": float(position.volume),
+            "symbol": position.symbol,
+            "comment": getattr(position, "comment", ""),
+        }
+
+    def get_copy_positions(self, symbol: str = "") -> List[Dict[str, Any]]:
+        """Get positions opened by this copier only, optionally scoped by symbol."""
+        if symbol:
+            positions = mt5.positions_get(symbol=symbol)
+        else:
+            positions = mt5.positions_get()
+
+        if not positions:
+            return []
+
+        return [
+            self._copy_position_to_dict(position)
+            for position in positions
+            if self._is_copy_position(position)
+        ]
+
+    def sync_position_units(
+        self,
+        symbol: str,
+        target_units: int,
+        unit_volume: float,
+        source_symbol: str = "",
+    ) -> Dict[str, Any]:
+        """Synchronize MT5 copy tickets to the ATAS target net unit count."""
+        if not self.is_connected():
+            return {"status": "error", "message": "MT5未连接"}
+
+        if int(target_units) != target_units:
+            return {"status": "error", "message": "target_units必须是整数"}
+
+        if unit_volume <= 0:
+            return {"status": "error", "message": "unit_volume必须大于0"}
+
+        if not self.is_hedging_account():
+            return {"status": "error", "message": "MT5账户不是hedging模式，无法按单位ticket同步"}
+
+        before_positions = self.get_copy_positions(symbol)
+        before_units = net_units(before_positions)
+        planned_actions = plan_unit_sync(before_positions, int(target_units), float(unit_volume))
+        executed_actions: List[Dict[str, Any]] = []
+
+        for action in planned_actions:
+            if action["action"] == "close":
+                success = self.close_position_by_ticket(
+                    int(action["ticket"]),
+                    comment=COPY_CLOSE_COMMENT,
+                )
+                executed_action = dict(action)
+                executed_action["status"] = "success" if success else "error"
+                executed_actions.append(executed_action)
+                if not success:
+                    return {
+                        "status": "error",
+                        "message": f"关闭复制仓ticket失败: {action['ticket']}",
+                        "data": {
+                            "symbol": symbol,
+                            "source_symbol": source_symbol,
+                            "target_units": int(target_units),
+                            "before_units": before_units,
+                            "unit_volume": float(unit_volume),
+                            "actions": executed_actions,
+                        },
+                    }
+
+            elif action["action"] == "open":
+                result = self.open_position(
+                    symbol=symbol,
+                    order_type=action["order_type"],
+                    volume=float(action["volume"]),
+                    comment=self._copy_comment(source_symbol),
+                )
+                success = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+                executed_action = dict(action)
+                executed_action["status"] = "success" if success else "error"
+                executed_action["ticket"] = result.order if success else None
+                if result is not None:
+                    executed_action["retcode"] = result.retcode
+                    executed_action["comment"] = getattr(result, "comment", "")
+                executed_actions.append(executed_action)
+                if not success:
+                    return {
+                        "status": "error",
+                        "message": f"打开复制仓失败: {action['order_type']} {action['volume']}",
+                        "data": {
+                            "symbol": symbol,
+                            "source_symbol": source_symbol,
+                            "target_units": int(target_units),
+                            "before_units": before_units,
+                            "unit_volume": float(unit_volume),
+                            "actions": executed_actions,
+                        },
+                    }
+
+        after_positions = self.get_copy_positions(symbol)
+        after_units = net_units(after_positions)
+        status = "success" if after_units == int(target_units) else "error"
+        message = "净仓同步完成" if status == "success" else "净仓同步后仓位仍不匹配"
+
+        return {
+            "status": status,
+            "message": message,
+            "data": {
+                "symbol": symbol,
+                "source_symbol": source_symbol,
+                "target_units": int(target_units),
+                "before_units": before_units,
+                "after_units": after_units,
+                "unit_volume": float(unit_volume),
+                "actions": executed_actions,
+                "tickets": after_positions,
+            },
+        }
     
     def get_account_info(self) -> Dict[str, Any]:
         """
@@ -368,7 +525,7 @@ class MT5Trader:
             "sl": float(sl) if sl > 0 else 0.0,  # 设置止损
             "tp": float(tp) if tp > 0 else 0.0,  # 设置止盈
             "deviation": int(deviation),  # 确保是整数
-            "magic": 123456,
+            "magic": COPY_MAGIC,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,  # 使用智能检测的填充模式
@@ -389,7 +546,7 @@ class MT5Trader:
         
         return result
     
-    def close_position_by_ticket(self, ticket: int) -> bool:
+    def close_position_by_ticket(self, ticket: int, comment: str = "关闭持仓") -> bool:
         """
         通过持仓票据关闭单个持仓
         
@@ -438,8 +595,8 @@ class MT5Trader:
             "position": ticket,
             "price": price,
             "deviation": 20,
-            "magic": 123456,
-            "comment": "关闭持仓",
+            "magic": COPY_MAGIC,
+            "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,  # 使用智能检测的填充模式
         }
@@ -448,6 +605,10 @@ class MT5Trader:
         logger.info(f"正在关闭持仓: {request}")
         result = mt5.order_send(request)
         
+        if result is None:
+            logger.error(f"关闭持仓失败，返回None，错误码: {mt5.last_error()}")
+            return False
+
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             logger.error(f"关闭持仓失败，错误码: {result.retcode}, 说明: {result.comment}")
             return False
@@ -469,8 +630,8 @@ class MT5Trader:
             logger.error("MT5未连接")
             return False
         
-        # 获取该品种的所有持仓
-        positions = mt5.positions_get(symbol=symbol)
+        # 只关闭本复制器创建的仓位，避免影响手动单或其他EA
+        positions = self.get_copy_positions(symbol)
         if not positions:
             logger.warning(f"没有找到持仓，品种: {symbol}")
             return True  # 没有持仓也算成功
@@ -478,7 +639,7 @@ class MT5Trader:
         # 依次关闭每个持仓
         all_closed = True
         for position in positions:
-            if not self.close_position_by_ticket(position.ticket):
+            if not self.close_position_by_ticket(position["ticket"], comment=COPY_CLOSE_COMMENT):
                 all_closed = False
         
         return all_closed
@@ -494,8 +655,8 @@ class MT5Trader:
             logger.error("MT5未连接")
             return False
         
-        # 获取所有持仓
-        positions = mt5.positions_get()
+        # 只关闭本复制器创建的仓位，避免影响手动单或其他EA
+        positions = self.get_copy_positions()
         if not positions:
             logger.warning("没有找到任何持仓")
             return True  # 没有持仓也算成功
@@ -503,7 +664,7 @@ class MT5Trader:
         # 依次关闭每个持仓
         all_closed = True
         for position in positions:
-            if not self.close_position_by_ticket(position.ticket):
+            if not self.close_position_by_ticket(position["ticket"], comment=COPY_CLOSE_COMMENT):
                 all_closed = False
         
         return all_closed
@@ -557,4 +718,4 @@ class MT5Trader:
         if self.initialized:
             logger.info("正在关闭MT5连接...")
             mt5.shutdown()
-            self.initialized = False 
+            self.initialized = False

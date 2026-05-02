@@ -11,7 +11,10 @@ namespace ATASOrderLogStrategy
     class MT5WebSocketClient : IDisposable
     {
         private ClientWebSocket ws;
-        private readonly string _logFilePath = @"C:\Users\Administrator\Documents\ATASLogs\TradeLog.txt";
+        private readonly string _logFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "ATASLogs",
+            "TradeLog.txt");
         private readonly string _serverUrl = "ws://127.0.0.1:8766";
         private readonly SemaphoreSlim _sendSemaphore = new SemaphoreSlim(1, 1);
         private CancellationTokenSource _cancellationTokenSource;

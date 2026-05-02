@@ -1,0 +1,4 @@
+__pycache__/
+bybit/__pycache__/
+tests/__pycache__/
+tests/tmp*/
