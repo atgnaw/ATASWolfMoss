@@ -4,14 +4,30 @@
     "login": "",
     "password": "",
     "log_level": "INFO",
+    "websocket": {
+        "listen_host": "127.0.0.1",
+        "port": 8766
+    },
     "symbol_mapping": {
         "BTCUSDT": {
             "symbol": "BTCUSDm",
+            "unit_volume": 1,
             "volume_ratio": 1
         },
         "Gold": {
             "symbol": "XAUUSD",
+            "unit_volume": 0.01,
             "volume_ratio": 0.01
+        },
+        "Micro E-mini Nasdaq-100": {
+            "symbol": "NASUSD",
+            "unit_volume": 0.1,
+            "volume_ratio": 0.1
+        },
+        "MNQM6@CME": {
+            "symbol": "NASUSD",
+            "unit_volume": 0.1,
+            "volume_ratio": 0.1
         }
     }
 }

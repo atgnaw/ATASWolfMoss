@@ -29,7 +29,7 @@ class SymbolMapper:
         """从配置文件加载符号映射"""
         try:
             if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                     mapping_config = config.get("symbol_mapping", {})
                     
@@ -39,13 +39,16 @@ class SymbolMapper:
                             # 旧格式：直接字符串映射
                             self.symbol_mapping[external_symbol] = {
                                 "symbol": mapping_info,
+                                "unit_volume": 1.0,
                                 "volume_ratio": 1.0
                             }
                         elif isinstance(mapping_info, dict):
-                            # 新格式：包含symbol和volume_ratio
+                            # 新格式：包含symbol和unit_volume；兼容旧的volume_ratio
+                            unit_volume = mapping_info.get("unit_volume", mapping_info.get("volume_ratio", 1.0))
                             self.symbol_mapping[external_symbol] = {
                                 "symbol": mapping_info.get("symbol", external_symbol),
-                                "volume_ratio": mapping_info.get("volume_ratio", 1.0)
+                                "unit_volume": unit_volume,
+                                "volume_ratio": unit_volume
                             }
                     
                     # 创建反向映射（只映射符号，不包括手数）
@@ -104,31 +107,35 @@ class SymbolMapper:
         logger.debug(f"符号映射(无匹配): {external_symbol} -> {external_symbol}")
         return external_symbol
     
-    def get_volume_ratio(self, external_symbol):
+    def get_unit_volume(self, external_symbol):
         """
-        获取手数映射比例（使用包含匹配）
+        获取每1手外部净仓对应的MT5单ticket手数（使用包含匹配）
         
         Args:
             external_symbol: 外部系统符号
             
         Returns:
-            float: 手数比例，如果没有映射关系则返回1.0
+            float: 单ticket手数，如果没有映射关系则返回1.0
         """
         # 首先尝试精确匹配
         if external_symbol in self.symbol_mapping:
-            volume_ratio = self.symbol_mapping[external_symbol]["volume_ratio"]
-            logger.debug(f"手数比例映射(精确): {external_symbol} -> {volume_ratio}")
-            return volume_ratio
+            unit_volume = self.symbol_mapping[external_symbol]["unit_volume"]
+            logger.debug(f"单位手数映射(精确): {external_symbol} -> {unit_volume}")
+            return unit_volume
         
         # 如果精确匹配失败，则尝试包含匹配
         best_match = self._find_best_match(external_symbol)
         if best_match:
-            volume_ratio = self.symbol_mapping[best_match]["volume_ratio"]
-            logger.debug(f"手数比例映射(包含): {external_symbol} -> {volume_ratio} (匹配key: {best_match})")
-            return volume_ratio
+            unit_volume = self.symbol_mapping[best_match]["unit_volume"]
+            logger.debug(f"单位手数映射(包含): {external_symbol} -> {unit_volume} (匹配key: {best_match})")
+            return unit_volume
         
-        logger.debug(f"手数比例映射(无匹配): {external_symbol} -> 1.0")
+        logger.debug(f"单位手数映射(无匹配): {external_symbol} -> 1.0")
         return 1.0
+
+    def get_volume_ratio(self, external_symbol):
+        """兼容旧接口：返回每1手外部净仓对应的MT5单ticket手数。"""
+        return self.get_unit_volume(external_symbol)
     
     def map_volume(self, external_symbol, volume):
         """
@@ -141,9 +148,9 @@ class SymbolMapper:
         Returns:
             float: 转换后的手数
         """
-        volume_ratio = self.get_volume_ratio(external_symbol)
-        mapped_volume = volume * volume_ratio
-        logger.debug(f"手数映射: {external_symbol} {volume} -> {mapped_volume} (比例: {volume_ratio})")
+        unit_volume = self.get_unit_volume(external_symbol)
+        mapped_volume = volume * unit_volume
+        logger.debug(f"手数映射: {external_symbol} {volume} -> {mapped_volume} (单位手数: {unit_volume})")
         return mapped_volume
     
     def map_from_mt5(self, mt5_symbol):
@@ -182,6 +189,7 @@ class SymbolMapper:
         # 添加映射
         self.symbol_mapping[external_symbol] = {
             "symbol": mt5_symbol,
+            "unit_volume": volume_ratio,
             "volume_ratio": volume_ratio
         }
         self.reverse_mapping[mt5_symbol] = external_symbol
@@ -228,15 +236,15 @@ class SymbolMapper:
             # 读取现有配置
             config = {}
             if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
             
             # 更新符号映射
             config["symbol_mapping"] = self.symbol_mapping
             
             # 写入配置文件
-            with open(self.config_file, 'w') as f:
-                json.dump(config, f, indent=4)
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
             
             logger.info(f"符号映射已保存到 {self.config_file}")
             return True
@@ -359,4 +367,4 @@ if __name__ == "__main__":
         
     print("\n" + "=" * 80)
     print("测试完成！新的包含匹配功能已生效。")
-    print("说明：输入的标的只要包含config中的key就能匹配，优先选择最长的匹配项。") 
+    print("说明：输入的标的只要包含config中的key就能匹配，优先选择最长的匹配项。")

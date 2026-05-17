@@ -1,0 +1,8 @@
+{
+    "symbol_mapping": {
+        "BTCUSDT": {
+            "symbol": "BTCUSDm",
+            "volume_ratio": 0.01
+        }
+    }
+}

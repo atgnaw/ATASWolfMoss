@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Threading.Tasks;
 using ATAS.DataFeedsCore;
@@ -9,18 +10,40 @@ namespace ATASOrderLogStrategy
 {
     public class OrderTradeRecorder : ChartStrategy
     {
-        private readonly string _logFilePath = @"C:\Users\Administrator\Documents\ATASLogs\TradeLog.txt";
-        private Dictionary<string, decimal> _position = new Dictionary<string, decimal>();
+        private readonly string _logFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "ATASLogs",
+            "TradeLog.txt");
+        private Dictionary<string, decimal> _lastNetPositions = new Dictionary<string, decimal>();
         private MT5WebSocketClient _MT5WebSocketClient = new MT5WebSocketClient();
-        private bool _isInitialized = false;
+        private string? _lastLoggedServerUrl = null;
         private bool _disposed = false;
+
+        [Category("MT5 WebSocket")]
+        [DisplayName("使用远程MT5服务端")]
+        [Description("关闭时连接本机 127.0.0.1；开启时连接远程MT5电脑的局域网IP。")]
+        public bool UseRemoteMt5Server { get; set; } = false;
+
+        [Category("MT5 WebSocket")]
+        [DisplayName("远程MT5 IP")]
+        [Description("运行Python服务端和MT5的电脑局域网IP，例如 192.168.1.20。")]
+        public string RemoteMt5Ip { get; set; } = "127.0.0.1";
+
+        [Category("MT5 WebSocket")]
+        [DisplayName("远程MT5端口")]
+        [Description("Python WebSocket服务端端口，默认 8766。")]
+        public int RemoteMt5Port { get; set; } = 8766;
 
         public OrderTradeRecorder()
         {
             try
             {
                 // 确保日志目录存在
-                Directory.CreateDirectory(Path.GetDirectoryName(_logFilePath));
+                var logDirectory = Path.GetDirectoryName(_logFilePath);
+                if (!string.IsNullOrEmpty(logDirectory))
+                {
+                    Directory.CreateDirectory(logDirectory);
+                }
                 File.AppendAllText(_logFilePath, "监听开始\n");
                 
 
@@ -44,6 +67,10 @@ namespace ATASOrderLogStrategy
             try
             {
                 File.AppendAllText(_logFilePath, "开始初始化WebSocket连接\n");
+                if (!EnsureWebSocketClientForCurrentSettings())
+                {
+                    return;
+                }
                 
                 // 异步连接WebSocket
                 bool connected = await _MT5WebSocketClient.Connect();
@@ -55,7 +82,6 @@ namespace ATASOrderLogStrategy
                     
                     if (requestSent)
                     {
-                        _isInitialized = true;
                         File.AppendAllText(_logFilePath, "WebSocket初始化完成\n");
                     }
                     else
@@ -102,68 +128,134 @@ namespace ATASOrderLogStrategy
 
         protected override void OnPositionChanged(Position position)
         {
+            if (!EnsureWebSocketClientForCurrentSettings())
+            {
+                File.AppendAllText(_logFilePath, "WebSocket配置无效，跳过净仓同步\n");
+                return;
+            }
+
             var Securityid = position.Security.ToString();
             // 获取当前持仓信息
             string logEntry = $"{DateTime.Now}: 持仓变化 - 合约: {position.Security},数量: {position.Volume}, 均价: {position.AveragePrice}, IsInPosition: {position.IsInPosition}\n";
-            if (position.Volume!=0 && !_position.ContainsKey(Securityid))
-            {
-                _position.Add(Securityid, position.Volume);
-                if (position.Volume>0)
-                {
-                    //开多
-                    _ = SendPositionUpdateAsync(position, "开多");
-                }
-                else
-                {
-                    //开空
-                    _ = SendPositionUpdateAsync(position, "开空");
-                }
-                File.AppendAllText(_logFilePath,"开仓"+ logEntry);
 
-            }
-            else if(position.Volume == 0 && _position.ContainsKey(Securityid))
+            if (_MT5WebSocketClient.IsConnected &&
+                _lastNetPositions.TryGetValue(Securityid, out var lastVolume) &&
+                lastVolume == position.Volume)
             {
-                _position.Remove(Securityid);
-                _ = SendPositionUpdateAsync(position, "平仓");
-                File.AppendAllText(_logFilePath, "平仓" + logEntry);
+                File.AppendAllText(_logFilePath, "净仓未变化，跳过同步 " + logEntry);
+                return;
             }
+
+            _ = SendPositionSyncAsync(position, Securityid);
+            File.AppendAllText(_logFilePath, "同步净仓" + logEntry);
         }
 
-        // 异步发送持仓更新信息
-        private async Task SendPositionUpdateAsync(Position position, string actionType)
+        // 异步发送当前净仓目标
+        private async Task SendPositionSyncAsync(Position position, string securityId)
         {
-            if (!_isInitialized || !_MT5WebSocketClient.IsConnected)
+            if (!EnsureWebSocketClientForCurrentSettings())
             {
-                File.AppendAllText(_logFilePath, "WebSocket未就绪，无法发送持仓更新\n");
+                File.AppendAllText(_logFilePath, "WebSocket配置无效，无法发送净仓同步\n");
                 return;
+            }
+
+            if (!_MT5WebSocketClient.IsConnected)
+            {
+                File.AppendAllText(_logFilePath, "WebSocket未连接，尝试重新连接\n");
+                bool reconnected = await _MT5WebSocketClient.Connect();
+                if (!reconnected)
+                {
+                    File.AppendAllText(_logFilePath, "WebSocket重连失败，无法发送净仓同步\n");
+                    return;
+                }
             }
 
             try
             {
                 var positionInfo = new
                 {
-                    action = actionType,
-                    security = position.Security.ToString(),
-                    volume = position.Volume,
-                    averagePrice = position.AveragePrice,
-                    isInPosition = position.IsInPosition,
+                    symbol = position.Security.ToString(),
+                    net_volume = position.Volume,
+                    average_price = position.AveragePrice,
+                    source = "ATAS",
                     timestamp = DateTime.Now
                 };
 
-                bool success = await _MT5WebSocketClient.SendRequest("position_update", positionInfo);
+                bool success = await _MT5WebSocketClient.SendRequest("sync_position", positionInfo);
                 if (success)
                 {
-                    File.AppendAllText(_logFilePath, $"已发送{actionType}消息到WebSocket服务器\n");
+                    _lastNetPositions[securityId] = position.Volume;
+                    File.AppendAllText(_logFilePath, $"已发送净仓同步消息到WebSocket服务器，目标净仓: {position.Volume}\n");
                 }
                 else
                 {
-                    File.AppendAllText(_logFilePath, $"发送{actionType}消息失败\n");
+                    File.AppendAllText(_logFilePath, "发送净仓同步消息失败\n");
                 }
             }
             catch (Exception ex)
             {
-                File.AppendAllText(_logFilePath, $"发送持仓更新消息异常: {ex.Message}\n");
+                File.AppendAllText(_logFilePath, $"发送净仓同步消息异常: {ex.Message}\n");
             }
+        }
+
+        private bool EnsureWebSocketClientForCurrentSettings()
+        {
+            if (!TryBuildServerUrl(out var serverUrl))
+            {
+                return false;
+            }
+
+            if (_lastLoggedServerUrl != serverUrl)
+            {
+                var mode = UseRemoteMt5Server ? "远程MT5服务端" : "本机MT5服务端";
+                File.AppendAllText(_logFilePath, $"当前使用{mode}: {serverUrl}\n");
+                _lastLoggedServerUrl = serverUrl;
+            }
+
+            if (_MT5WebSocketClient.ServerUrl == serverUrl)
+            {
+                return true;
+            }
+
+            File.AppendAllText(_logFilePath, $"WebSocket目标变更为: {serverUrl}\n");
+            _MT5WebSocketClient.Dispose();
+            _MT5WebSocketClient = new MT5WebSocketClient(serverUrl);
+            return true;
+        }
+
+        private bool TryBuildServerUrl(out string serverUrl)
+        {
+            serverUrl = MT5WebSocketClient.DefaultServerUrl;
+            var port = RemoteMt5Port;
+
+            if (port <= 0 || port > 65535)
+            {
+                File.AppendAllText(_logFilePath, $"远程MT5端口无效: {port}，有效范围是1-65535\n");
+                return false;
+            }
+
+            if (!UseRemoteMt5Server)
+            {
+                serverUrl = MT5WebSocketClient.DefaultServerUrl;
+                return true;
+            }
+
+            var host = (RemoteMt5Ip ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                File.AppendAllText(_logFilePath, "已启用远程MT5服务端，但远程MT5 IP为空\n");
+                return false;
+            }
+
+            if (Uri.CheckHostName(host) == UriHostNameType.Unknown)
+            {
+                File.AppendAllText(_logFilePath, $"远程MT5 IP/主机名无效: {host}\n");
+                return false;
+            }
+
+            var builder = new UriBuilder("ws", host, port);
+            serverUrl = builder.Uri.ToString();
+            return true;
         }
 
         protected override void OnCalculate(int bar, decimal value)
