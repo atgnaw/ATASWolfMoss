@@ -461,7 +461,7 @@ async def start_server():
     asyncio.create_task(periodic_tasks())
     
     # 启动WebSocket服务器
-    websocket_config = get_websocket_config(config)
+    websocket_config = get_websocket_config(config, default_port=8767)
     host = websocket_config["listen_host"]
     port = websocket_config["port"]
     

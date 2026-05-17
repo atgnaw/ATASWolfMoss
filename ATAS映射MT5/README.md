@@ -311,3 +311,59 @@ To execute orders on another computer in the same LAN:
 6. Confirm the MT5 computer PowerShell log shows a new WebSocket client connection before trading live.
 
 If remote mode is disabled, the strategy always falls back to local mode and connects to `127.0.0.1:8766`.
+## Unified execution gateway for MT5 and Bookmap
+
+ATAS now sends `sync_position` to one execution gateway. The gateway fans the
+same request out to enabled executors such as MT5 and Bookmap.
+
+Default port layout:
+
+```text
+ATAS -> Gateway:             ws://127.0.0.1:8766
+Gateway -> MT5 executor:     ws://127.0.0.1:8767
+Bookmap Add-on -> Gateway:   registers on ws://127.0.0.1:8766
+```
+
+Start order for local testing:
+
+```powershell
+cd "D:\GitHub\ATASWolfMoss\ATAS映射MT5\py_order_api"
+python websocket_server.py
+python -m gateway.execution_gateway
+```
+
+For LAN deployment, run the gateway on the machine that ATAS should connect to
+and open TCP port `8766` in Windows Firewall. If MT5 is on another machine, run
+the MT5 executor there, expose its configured port, and update `targets.mt5.url`
+in `py_order_api/config.json`.
+
+Gateway config example:
+
+```json
+{
+    "gateway": {
+        "listen_host": "127.0.0.1",
+        "port": 8766,
+        "request_timeout_seconds": 30
+    },
+    "targets": {
+        "mt5": {
+            "enabled": true,
+            "url": "ws://127.0.0.1:8767"
+        },
+        "bookmap": {
+            "enabled": true,
+            "connection": "registered"
+        }
+    },
+    "websocket": {
+        "listen_host": "127.0.0.1",
+        "port": 8767
+    }
+}
+```
+
+Bookmap Java Add-on lives in `bookmap_addon/`. It contains the net-position
+planner, Gateway registration client, and a message handler that can be wired to
+Bookmap API order/position callbacks. Keep `dryRun=true` until Bookmap simulated
+orders are verified.

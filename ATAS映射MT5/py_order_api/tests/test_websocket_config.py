@@ -32,6 +32,12 @@ class WebSocketConfigTests(unittest.TestCase):
         self.assertEqual(config["listen_host"], "0.0.0.0")
         self.assertEqual(config["port"], 8766)
 
+    def test_allows_executor_default_port_override(self):
+        config = get_websocket_config({}, default_port=8767)
+
+        self.assertEqual(config["listen_host"], "127.0.0.1")
+        self.assertEqual(config["port"], 8767)
+
 
 if __name__ == "__main__":
     unittest.main()
