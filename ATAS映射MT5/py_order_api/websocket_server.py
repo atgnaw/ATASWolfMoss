@@ -11,6 +11,7 @@ import MetaTrader5 as mt5
 from mt5_trader import MT5Trader
 from symbol_mapper import get_mapper
 from sync_contract import parse_target_units
+from websocket_config import get_websocket_config
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -460,8 +461,9 @@ async def start_server():
     asyncio.create_task(periodic_tasks())
     
     # 启动WebSocket服务器
-    host = "127.0.0.1"
-    port = 8766
+    websocket_config = get_websocket_config(config)
+    host = websocket_config["listen_host"]
+    port = websocket_config["port"]
     
     # 设置WebSocket服务器选项，增加ping超时时间
     server_options = {

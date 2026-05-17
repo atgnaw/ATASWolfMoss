@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from typing import Union, Dict, List, Any, Optional
 from position_sync import BUY, SELL, net_units, plan_unit_sync
+from sync_contract import format_mt5_comment
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -152,9 +153,7 @@ class MT5Trader:
         return True
 
     def _copy_comment(self, source_symbol: str = "") -> str:
-        if source_symbol:
-            return f"{COPY_COMMENT_PREFIX}|{source_symbol}"
-        return COPY_COMMENT_PREFIX
+        return format_mt5_comment(COPY_COMMENT_PREFIX)
 
     def _is_copy_position(self, position: Any) -> bool:
         magic = getattr(position, "magic", None)

@@ -10,21 +10,25 @@ namespace ATASOrderLogStrategy
 {
     class MT5WebSocketClient : IDisposable
     {
-        private ClientWebSocket ws;
+        public const string DefaultServerUrl = "ws://127.0.0.1:8766";
+
+        private ClientWebSocket? ws;
         private readonly string _logFilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             "ATASLogs",
             "TradeLog.txt");
-        private readonly string _serverUrl = "ws://127.0.0.1:8766";
+        private readonly string _serverUrl;
         private readonly SemaphoreSlim _sendSemaphore = new SemaphoreSlim(1, 1);
         private CancellationTokenSource _cancellationTokenSource;
         private bool _disposed = false;
         private bool _isConnecting = false;
 
         public bool IsConnected => ws?.State == WebSocketState.Open;
+        public string ServerUrl => _serverUrl;
 
-        public MT5WebSocketClient()
+        public MT5WebSocketClient(string serverUrl = DefaultServerUrl)
         {
+            _serverUrl = string.IsNullOrWhiteSpace(serverUrl) ? DefaultServerUrl : serverUrl;
             _cancellationTokenSource = new CancellationTokenSource();
         }
 
@@ -49,8 +53,9 @@ namespace ATASOrderLogStrategy
                 ws?.Dispose();
                 ws = new ClientWebSocket();
 
+                File.AppendAllText(_logFilePath, $"正在连接WebSocket服务器: {_serverUrl}\n");
                 await ws.ConnectAsync(new Uri(_serverUrl), _cancellationTokenSource.Token);
-                File.AppendAllText(_logFilePath, "已连接到服务器\n");
+                File.AppendAllText(_logFilePath, $"已连接到服务器: {_serverUrl}\n");
 
                 // 启动接收消息任务
                 _ = ReceiveMessages();
@@ -72,7 +77,7 @@ namespace ATASOrderLogStrategy
             try
             {
                 var buffer = new byte[4096];
-                while (ws.State == WebSocketState.Open && !_cancellationTokenSource.Token.IsCancellationRequested)
+                while (ws?.State == WebSocketState.Open && !_cancellationTokenSource.Token.IsCancellationRequested)
                 {
                     var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), _cancellationTokenSource.Token);
                     
@@ -109,6 +114,13 @@ namespace ATASOrderLogStrategy
             await _sendSemaphore.WaitAsync();
             try
             {
+                var socket = ws;
+                if (socket == null)
+                {
+                    File.AppendAllText(_logFilePath, "WebSocket未连接，无法发送消息\n");
+                    return false;
+                }
+
                 var request = new
                 {
                     id = Guid.NewGuid().ToString(),
@@ -120,7 +132,7 @@ namespace ATASOrderLogStrategy
                 var json = JsonConvert.SerializeObject(request);
                 var bytes = Encoding.UTF8.GetBytes(json);
                 
-                await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cancellationTokenSource.Token);
+                await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cancellationTokenSource.Token);
                 File.AppendAllText(_logFilePath, $"发送消息: {action}\n");
                 return true;
             }
