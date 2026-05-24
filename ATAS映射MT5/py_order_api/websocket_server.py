@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # 保存所有已连接的WebSocket客户端
 connected_clients = set()
+sync_position_lock = asyncio.Lock()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
@@ -193,19 +194,20 @@ async def sync_position(params):
             f"目标单位={target_units}, 单ticket手数={unit_volume}"
         )
 
-        loop = asyncio.get_running_loop()
-        response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: trader.sync_position_units(
-                    symbol=symbol,
-                    target_units=target_units,
-                    unit_volume=unit_volume,
-                    source_symbol=external_symbol,
+        async with sync_position_lock:
+            loop = asyncio.get_running_loop()
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: trader.sync_position_units(
+                        symbol=symbol,
+                        target_units=target_units,
+                        unit_volume=unit_volume,
+                        source_symbol=external_symbol,
+                    ),
                 ),
-            ),
-            timeout=180,
-        )
+                timeout=180,
+            )
         return response
 
     except asyncio.TimeoutError:

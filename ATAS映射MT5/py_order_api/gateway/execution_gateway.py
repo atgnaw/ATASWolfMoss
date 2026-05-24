@@ -49,6 +49,7 @@ class RegisteredExecutor:
 
 
 registered_executors: Dict[str, RegisteredExecutor] = {}
+url_executor_locks: Dict[str, asyncio.Lock] = {}
 
 
 def load_config(path: str = CONFIG_PATH) -> Dict[str, Any]:
@@ -131,9 +132,18 @@ async def dispatch_to_executors(
     }
 
     params = request.get("params", {})
+    symbol = params.get("symbol") if isinstance(params, Mapping) else None
     target_units: Optional[int] = None
     if isinstance(params, Mapping) and "net_volume" in params:
         target_units = parse_target_units(params.get("net_volume"))
+
+    logger.info(
+        "Gateway收到sync_position: symbol=%s, target_units=%s, enabled_targets=%s, registered=%s",
+        symbol,
+        target_units,
+        sorted(enabled_targets.keys()),
+        sorted(registered_executor_ids),
+    )
 
     async def call_target(executor_id: str, target: Mapping[str, Any]):
         try:
@@ -176,6 +186,18 @@ async def dispatch_to_executors(
     )
     results = {executor_id: result for executor_id, result in pairs}
     status = aggregate_executor_results(results)
+
+    logger.info(
+        "Gateway同步结果: status=%s, results=%s",
+        status,
+        {
+            executor_id: {
+                "status": result.get("status"),
+                "message": result.get("message"),
+            }
+            for executor_id, result in results.items()
+        },
+    )
 
     return {
         "status": status,
@@ -232,17 +254,33 @@ async def send_to_url_executor(
         "action": request.get("action"),
         "params": request.get("params", {}),
     }
-    if websockets is None:
-        return {
-            "status": "error",
-            "message": "缺少Python依赖: websockets",
-        }
-    async with websockets.connect(url, ping_interval=30, ping_timeout=max(timeout, 30)) as websocket:
-        try:
-            await asyncio.wait_for(websocket.recv(), timeout=2)
-        except Exception:
-            pass
-        return await send_request_over_websocket(websocket, gateway_request, timeout)
+    async def call_executor():
+        if websockets is None:
+            return {
+                "status": "error",
+                "message": "缺少Python依赖: websockets",
+            }
+        async with websockets.connect(url, ping_interval=30, ping_timeout=max(timeout, 30)) as websocket:
+            try:
+                await asyncio.wait_for(websocket.recv(), timeout=2)
+            except Exception:
+                pass
+            return await send_request_over_websocket(websocket, gateway_request, timeout)
+
+    return await run_with_url_executor_lock(executor_id, call_executor)
+
+
+async def run_with_url_executor_lock(
+    executor_id: str,
+    operation: Callable[[], Awaitable[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    lock = url_executor_locks.get(executor_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        url_executor_locks[executor_id] = lock
+
+    async with lock:
+        return await operation()
 
 
 async def register_executor(websocket: Any, params: Mapping[str, Any]) -> Dict[str, Any]:

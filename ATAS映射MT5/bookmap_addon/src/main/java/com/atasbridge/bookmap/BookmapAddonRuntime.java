@@ -6,6 +6,7 @@ import com.atasbridge.bookmap.gateway.GatewayClient;
 import com.atasbridge.bookmap.gateway.GatewaySyncHandler;
 
 import java.net.URI;
+import java.util.function.Consumer;
 
 /**
  * Runtime wiring for the Bookmap add-on wrapper.
@@ -16,6 +17,8 @@ import java.net.URI;
  */
 public final class BookmapAddonRuntime {
     private final GatewayClient gatewayClient;
+    private final Consumer<String> logger;
+    private Thread gatewayThread;
 
     public BookmapAddonRuntime(
         URI gatewayUri,
@@ -23,6 +26,17 @@ public final class BookmapAddonRuntime {
         BookmapCurrentPositionProvider positionProvider,
         BookmapOrderExecutor orderExecutor
     ) {
+        this(gatewayUri, bridge, positionProvider, orderExecutor, System.out::println);
+    }
+
+    public BookmapAddonRuntime(
+        URI gatewayUri,
+        ATASBookmapBridge bridge,
+        BookmapCurrentPositionProvider positionProvider,
+        BookmapOrderExecutor orderExecutor,
+        Consumer<String> logger
+    ) {
+        this.logger = logger;
         GatewaySyncHandler syncHandler = new GatewaySyncHandler(bridge, positionProvider, orderExecutor);
         final GatewayClient[] clientRef = new GatewayClient[1];
         GatewayClient client = new GatewayClient(gatewayUri, message -> {
@@ -34,7 +48,24 @@ public final class BookmapAddonRuntime {
     }
 
     public void start() {
-        gatewayClient.connectAndRegister();
+        gatewayThread = new Thread(() -> {
+            try {
+                gatewayClient.connectAndRegister();
+                logger.accept("ATAS Bookmap Bridge connected to Gateway");
+            } catch (Exception exc) {
+                logger.accept("ATAS Bookmap Bridge Gateway connection failed: " + exc.getMessage());
+            }
+        }, "ATASBookmapBridge-Gateway");
+        gatewayThread.setDaemon(true);
+        gatewayThread.start();
+    }
+
+    public void stop() {
+        gatewayClient.close();
+        Thread thread = gatewayThread;
+        if (thread != null) {
+            thread.interrupt();
+        }
     }
 
 }

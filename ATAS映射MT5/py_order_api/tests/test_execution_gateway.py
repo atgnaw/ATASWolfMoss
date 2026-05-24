@@ -1,7 +1,11 @@
 import asyncio
 import unittest
 
-from gateway.execution_gateway import aggregate_executor_results, dispatch_to_executors
+from gateway.execution_gateway import (
+    aggregate_executor_results,
+    dispatch_to_executors,
+    run_with_url_executor_lock,
+)
 
 
 class ExecutionGatewayAggregationTests(unittest.TestCase):
@@ -103,6 +107,26 @@ class ExecutionGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["status"], "partial_error")
         self.assertEqual(response["data"]["results"]["mt5"]["status"], "success")
         self.assertEqual(response["data"]["results"]["bookmap"]["status"], "error")
+
+    async def test_url_executor_calls_are_serialized_per_executor(self):
+        active_calls = 0
+        max_active_calls = 0
+
+        async def protected_call():
+            nonlocal active_calls, max_active_calls
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            await asyncio.sleep(0.01)
+            active_calls -= 1
+            return {"status": "success"}
+
+        results = await asyncio.gather(
+            run_with_url_executor_lock("mt5", protected_call),
+            run_with_url_executor_lock("mt5", protected_call),
+        )
+
+        self.assertEqual([result["status"] for result in results], ["success", "success"])
+        self.assertEqual(max_active_calls, 1)
 
 
 if __name__ == "__main__":

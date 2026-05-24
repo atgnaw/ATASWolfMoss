@@ -15,6 +15,7 @@ namespace ATASOrderLogStrategy
             "ATASLogs",
             "TradeLog.txt");
         private Dictionary<string, decimal> _lastNetPositions = new Dictionary<string, decimal>();
+        private Dictionary<string, decimal> _inFlightNetPositions = new Dictionary<string, decimal>();
         private MT5WebSocketClient _MT5WebSocketClient = new MT5WebSocketClient();
         private string? _lastLoggedServerUrl = null;
         private bool _disposed = false;
@@ -146,6 +147,14 @@ namespace ATASOrderLogStrategy
                 return;
             }
 
+            if (_inFlightNetPositions.TryGetValue(Securityid, out var inFlightVolume) &&
+                inFlightVolume == position.Volume)
+            {
+                File.AppendAllText(_logFilePath, "相同净仓同步请求正在进行中，跳过重复发送 " + logEntry);
+                return;
+            }
+
+            _inFlightNetPositions[Securityid] = position.Volume;
             _ = SendPositionSyncAsync(position, Securityid);
             File.AppendAllText(_logFilePath, "同步净仓" + logEntry);
         }
@@ -155,6 +164,7 @@ namespace ATASOrderLogStrategy
         {
             if (!EnsureWebSocketClientForCurrentSettings())
             {
+                _inFlightNetPositions.Remove(securityId);
                 File.AppendAllText(_logFilePath, "WebSocket配置无效，无法发送净仓同步\n");
                 return;
             }
@@ -165,6 +175,7 @@ namespace ATASOrderLogStrategy
                 bool reconnected = await _MT5WebSocketClient.Connect();
                 if (!reconnected)
                 {
+                    _inFlightNetPositions.Remove(securityId);
                     File.AppendAllText(_logFilePath, "WebSocket重连失败，无法发送净仓同步\n");
                     return;
                 }
@@ -185,15 +196,18 @@ namespace ATASOrderLogStrategy
                 if (success)
                 {
                     _lastNetPositions[securityId] = position.Volume;
+                    _inFlightNetPositions.Remove(securityId);
                     File.AppendAllText(_logFilePath, $"已发送净仓同步消息到WebSocket服务器，目标净仓: {position.Volume}\n");
                 }
                 else
                 {
+                    _inFlightNetPositions.Remove(securityId);
                     File.AppendAllText(_logFilePath, "发送净仓同步消息失败\n");
                 }
             }
             catch (Exception ex)
             {
+                _inFlightNetPositions.Remove(securityId);
                 File.AppendAllText(_logFilePath, $"发送净仓同步消息异常: {ex.Message}\n");
             }
         }

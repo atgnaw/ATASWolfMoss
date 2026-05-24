@@ -10,7 +10,7 @@ dependencyResolutionManagement {
     repositories {
         mavenCentral()
         maven {
-            url = uri("https://javadoc.bookmap.com/maven2/releases/")
+            url = uri("https://maven.bookmap.com/maven2/releases/")
         }
     }
 }
