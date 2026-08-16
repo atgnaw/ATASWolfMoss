@@ -42,7 +42,8 @@ public readonly record struct InstrumentPair(
 public sealed record ReferenceMinuteClose(
     string Symbol,
     DateTime MinuteStartUtc,
-    decimal Close);
+    decimal Close,
+    string Source = "Yahoo");
 
 public sealed record MappingSnapshot(
     InstrumentPair Pair,
@@ -51,11 +52,11 @@ public sealed record MappingSnapshot(
     decimal FuturesClose,
     decimal ReferenceClose,
     decimal Ratio,
-    DateTime AppliedMarketTime);
+    DateTime AppliedUtcTime);
 
 public sealed record UpdateAttemptSnapshot(
     UpdateState State,
-    DateTime AttemptMarketTime,
+    DateTime AttemptUtcTime,
     string Message)
 {
     public static UpdateAttemptSnapshot Waiting(DateTime time, string message = "等待首次更新")

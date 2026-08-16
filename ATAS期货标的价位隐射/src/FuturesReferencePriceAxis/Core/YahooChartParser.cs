@@ -3,9 +3,9 @@ namespace WolfMoss.ATAS.PriceMapping.Core;
 using System.Globalization;
 using System.Text.Json;
 
-public sealed class YahooDataException : Exception
+public class ReferenceDataException : Exception
 {
-    public YahooDataException(
+    public ReferenceDataException(
         string code,
         string message,
         Exception? innerException = null)
@@ -15,6 +15,17 @@ public sealed class YahooDataException : Exception
     }
 
     public string Code { get; }
+}
+
+public sealed class YahooDataException : ReferenceDataException
+{
+    public YahooDataException(
+        string code,
+        string message,
+        Exception? innerException = null)
+        : base(code, message, innerException)
+    {
+    }
 }
 
 public static class YahooChartParser
@@ -27,7 +38,8 @@ public static class YahooChartParser
         DateTime nowUtc,
         TimeSpan maximumAge,
         DateTime? lastAcceptedMinuteUtc = null,
-        bool allowExpiredQuote = false)
+        bool allowExpiredQuote = false,
+        bool requireNqTradableMinute = false)
     {
         try
         {
@@ -89,12 +101,19 @@ public static class YahooChartParser
                     continue;
 
                 hasPositivePrice = true;
-                var minuteUtc = DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime;
+                var minuteUtc = TruncateToMinute(
+                    DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime);
 
                 if (minuteUtc.AddMinutes(1).Add(CompletionGrace) > nowUtc)
                     continue;
 
                 hasCompletedPrice = true;
+
+                if (requireNqTradableMinute
+                    && !NqTradingSessionCalendar.IsOpen(minuteUtc))
+                {
+                    continue;
+                }
 
                 if (lastAcceptedMinuteUtc.HasValue && minuteUtc <= lastAcceptedMinuteUtc.Value)
                     continue;
@@ -161,6 +180,16 @@ public static class YahooChartParser
         => string.Equals(symbol, "^GSPC", StringComparison.OrdinalIgnoreCase)
             ? "SPX"
             : symbol;
+
+    private static DateTime TruncateToMinute(DateTime value)
+        => new(
+            value.Year,
+            value.Month,
+            value.Day,
+            value.Hour,
+            value.Minute,
+            0,
+            DateTimeKind.Utc);
 
     private static bool TryReadPositiveDecimal(JsonElement value, out decimal result)
     {
