@@ -4,9 +4,24 @@
     "login": "",
     "password": "",
     "log_level": "INFO",
+    "gateway": {
+        "listen_host": "127.0.0.1",
+        "port": 8766,
+        "request_timeout_seconds": 30
+    },
+    "targets": {
+        "mt5": {
+            "enabled": true,
+            "url": "ws://127.0.0.1:8767"
+        },
+        "bookmap": {
+            "enabled": true,
+            "connection": "registered"
+        }
+    },
     "websocket": {
         "listen_host": "127.0.0.1",
-        "port": 8766
+        "port": 8767
     },
     "symbol_mapping": {
         "BTCUSDT": {

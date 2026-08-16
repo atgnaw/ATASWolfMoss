@@ -1,0 +1,41 @@
+plugins {
+    id "java"
+}
+
+group = "com.atasbridge"
+version = "0.1.0"
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    compileOnly "com.bookmap.api:api-core:7.4.0.21@jar"
+    compileOnly "com.bookmap.api:api-simplified:7.4.0.21@jar"
+    testCompileOnly "com.bookmap.api:api-core:7.4.0.21@jar"
+    testCompileOnly "com.bookmap.api:api-simplified:7.4.0.21@jar"
+}
+
+jar {
+    archiveBaseName = "ATASBookmapBridge"
+    manifest {
+        attributes(
+            "Implementation-Title": "ATAS Bookmap Bridge",
+            "Implementation-Version": project.version
+        )
+    }
+}
+
+tasks.register("plannerTest", JavaExec) {
+    group = "verification"
+    description = "Runs dependency-free net position planner checks."
+    classpath = sourceSets.main.runtimeClasspath +
+        sourceSets.test.runtimeClasspath +
+        sourceSets.main.compileClasspath +
+        sourceSets.test.compileClasspath
+    mainClass = "com.atasbridge.bookmap.NetPositionPlannerTest"
+}
+
+check.dependsOn("plannerTest")

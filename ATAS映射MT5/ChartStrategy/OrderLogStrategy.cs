@@ -15,23 +15,24 @@ namespace ATASOrderLogStrategy
             "ATASLogs",
             "TradeLog.txt");
         private Dictionary<string, decimal> _lastNetPositions = new Dictionary<string, decimal>();
+        private Dictionary<string, decimal> _inFlightNetPositions = new Dictionary<string, decimal>();
         private MT5WebSocketClient _MT5WebSocketClient = new MT5WebSocketClient();
         private string? _lastLoggedServerUrl = null;
         private bool _disposed = false;
 
-        [Category("MT5 WebSocket")]
-        [DisplayName("使用远程MT5服务端")]
-        [Description("关闭时连接本机 127.0.0.1；开启时连接远程MT5电脑的局域网IP。")]
+        [Category("Execution WebSocket")]
+        [DisplayName("使用远程执行服务端")]
+        [Description("关闭时连接本机执行网关 127.0.0.1；开启时连接远程执行网关的局域网IP。")]
         public bool UseRemoteMt5Server { get; set; } = false;
 
-        [Category("MT5 WebSocket")]
-        [DisplayName("远程MT5 IP")]
-        [Description("运行Python服务端和MT5的电脑局域网IP，例如 192.168.1.20。")]
+        [Category("Execution WebSocket")]
+        [DisplayName("远程执行服务端 IP")]
+        [Description("运行执行网关的电脑局域网IP，例如 192.168.1.20。")]
         public string RemoteMt5Ip { get; set; } = "127.0.0.1";
 
-        [Category("MT5 WebSocket")]
-        [DisplayName("远程MT5端口")]
-        [Description("Python WebSocket服务端端口，默认 8766。")]
+        [Category("Execution WebSocket")]
+        [DisplayName("远程执行服务端端口")]
+        [Description("执行网关 WebSocket 端口，默认 8766。")]
         public int RemoteMt5Port { get; set; } = 8766;
 
         public OrderTradeRecorder()
@@ -146,6 +147,14 @@ namespace ATASOrderLogStrategy
                 return;
             }
 
+            if (_inFlightNetPositions.TryGetValue(Securityid, out var inFlightVolume) &&
+                inFlightVolume == position.Volume)
+            {
+                File.AppendAllText(_logFilePath, "相同净仓同步请求正在进行中，跳过重复发送 " + logEntry);
+                return;
+            }
+
+            _inFlightNetPositions[Securityid] = position.Volume;
             _ = SendPositionSyncAsync(position, Securityid);
             File.AppendAllText(_logFilePath, "同步净仓" + logEntry);
         }
@@ -155,6 +164,7 @@ namespace ATASOrderLogStrategy
         {
             if (!EnsureWebSocketClientForCurrentSettings())
             {
+                _inFlightNetPositions.Remove(securityId);
                 File.AppendAllText(_logFilePath, "WebSocket配置无效，无法发送净仓同步\n");
                 return;
             }
@@ -165,6 +175,7 @@ namespace ATASOrderLogStrategy
                 bool reconnected = await _MT5WebSocketClient.Connect();
                 if (!reconnected)
                 {
+                    _inFlightNetPositions.Remove(securityId);
                     File.AppendAllText(_logFilePath, "WebSocket重连失败，无法发送净仓同步\n");
                     return;
                 }
@@ -185,15 +196,18 @@ namespace ATASOrderLogStrategy
                 if (success)
                 {
                     _lastNetPositions[securityId] = position.Volume;
+                    _inFlightNetPositions.Remove(securityId);
                     File.AppendAllText(_logFilePath, $"已发送净仓同步消息到WebSocket服务器，目标净仓: {position.Volume}\n");
                 }
                 else
                 {
+                    _inFlightNetPositions.Remove(securityId);
                     File.AppendAllText(_logFilePath, "发送净仓同步消息失败\n");
                 }
             }
             catch (Exception ex)
             {
+                _inFlightNetPositions.Remove(securityId);
                 File.AppendAllText(_logFilePath, $"发送净仓同步消息异常: {ex.Message}\n");
             }
         }
@@ -207,7 +221,7 @@ namespace ATASOrderLogStrategy
 
             if (_lastLoggedServerUrl != serverUrl)
             {
-                var mode = UseRemoteMt5Server ? "远程MT5服务端" : "本机MT5服务端";
+                var mode = UseRemoteMt5Server ? "远程执行服务端" : "本机执行服务端";
                 File.AppendAllText(_logFilePath, $"当前使用{mode}: {serverUrl}\n");
                 _lastLoggedServerUrl = serverUrl;
             }
@@ -243,13 +257,13 @@ namespace ATASOrderLogStrategy
             var host = (RemoteMt5Ip ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(host))
             {
-                File.AppendAllText(_logFilePath, "已启用远程MT5服务端，但远程MT5 IP为空\n");
+                File.AppendAllText(_logFilePath, "已启用远程执行服务端，但远程IP为空\n");
                 return false;
             }
 
             if (Uri.CheckHostName(host) == UriHostNameType.Unknown)
             {
-                File.AppendAllText(_logFilePath, $"远程MT5 IP/主机名无效: {host}\n");
+                File.AppendAllText(_logFilePath, $"远程执行服务端IP/主机名无效: {host}\n");
                 return false;
             }
 
