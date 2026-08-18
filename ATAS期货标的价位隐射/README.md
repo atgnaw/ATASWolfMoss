@@ -1,4 +1,4 @@
-# ATAS 期货—现货同分钟价格轴映射 v1.1.0
+# ATAS 期货—现货同分钟价格轴映射
 
 这是一个适用于 ATAS 8.x 的自定义指标，在期货主图左侧增加参考标的价格轴：
 
@@ -13,6 +13,11 @@
 比例 = 同分钟期货收盘价 ÷ 同分钟 QQQ/SPX 收盘价
 参考价格轴 = 期货价格轴 ÷ 比例
 ```
+
+项目可同时生成两个版本：
+
+- 普通版 `FuturesReferencePriceAxis` v1.1.0：保持原有映射功能和指标类型不变。
+- Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.0.0：在映射轴右侧增加同宽的 Nightwatch Dealer Heatmap。
 
 ## 编译
 
@@ -36,6 +41,7 @@ dotnet build .\FuturesReferencePriceAxis.sln -c Release `
 
 ```text
 src\FuturesReferencePriceAxis\bin\Release\FuturesReferencePriceAxis.dll
+src\FuturesReferencePriceAxis.DealerHeatmap\bin\Release\FuturesReferencePriceAxis.DealerHeatmap.dll
 ```
 
 ## 安装
@@ -50,7 +56,10 @@ src\FuturesReferencePriceAxis\bin\Release\FuturesReferencePriceAxis.dll
 
 ```text
 Futures Reference Price Axis / 期货现货映射轴
+Futures Reference Price Axis Pro / 期货现货映射轴 Pro（Dealer Heatmap）
 ```
+
+两个 DLL 是自包含指标，可以同时安装，不需要额外的共享业务 DLL。
 
 ## 设置
 
@@ -82,6 +91,31 @@ v1.1.0 会让同一进程中的多个图表共享同一标的和同一分钟选�
 进行中请求：成功结果缓存 15 秒，失败抑制 5 秒。报价过期和重复校验仍由
 每个指标实例按自己的设置独立执行。主源和备用源均失败时，状态行会同时
 保留两边的简短诊断。
+
+## Pro Dealer Heatmap
+
+Pro 版使用 Nightwatch REST 接口读取指定到期日的最新 Dealer Heatmap 5 分钟桶：
+
+- NQ / MNQ 使用 QQQ。
+- ES / MES 使用 SPX。
+- 美股交易日盘前和 RTH 使用当天 expiration；收盘后、周末和完整休市日使用
+  之后最近的 NYSE 开盘日。
+- RTH 默认每 5 分钟、数据边界后 20 秒更新；其他时段默认每 60 分钟更新，
+  并在下一 RTH 开始时主动唤醒。
+- 只绘制 API 返回的稀疏节点。QQQ 每格固定为 1 美元执行价，SPX 每格固定为
+  5 美元；缺失节点不会补零、插值或用旧节点填充。
+- 相同 API key、ticker、expiration 和 5 分钟桶的 Pro 实例共享同一请求。
+  `429` 严格服从 `Retry-After`；网络、服务或解析失败时只冻结同 ticker、
+  同 expiration 的最后有效帧。
+
+Pro 设置组中需要填写 `Nightwatch API key`。该属性在 ATAS 设置面板中以密码
+样式遮盖，但 ATAS 仍可能把它明文保存在本地模板或配置中。密钥不会写入代码、
+请求 URL、状态文字或异常诊断。未配置密钥时 Dealer Heatmap 不发出网络请求，
+原有映射功能仍可正常使用。
+
+热力图头部和状态面板会同时标明目标 expiration、数据 as-of 时间及
+`LIVE`、`NEXT SESSION`、`FROZEN`、`AUTH FAILED` 或 `RATE LIMITED` 状态，
+避免把休盘期间针对下一到期日的旧观测误标为实时 0DTE。
 
 ## 数据与限制
 
@@ -125,4 +159,14 @@ v1.1.0 会让同一进程中的多个图表共享同一标的和同一分钟选�
 
 ```powershell
 dotnet run --project .\tests\FuturesReferencePriceAxis.Tests\FuturesReferencePriceAxis.Tests.csproj -c Release
+```
+
+Nightwatch live smoke test默认不会运行。需要显式提供临时环境变量并指定参数；
+输出只包含 ticker、到期日、时间、节点数和 spot，不会输出密钥：
+
+```powershell
+$env:YEHANGSHE_API_KEY = "<temporary key>"
+dotnet run --project .\tests\FuturesReferencePriceAxis.Tests\FuturesReferencePriceAxis.Tests.csproj `
+  -c Release -- --live-dealer-heatmap --ticker=SPX
+Remove-Item Env:\YEHANGSHE_API_KEY
 ```

@@ -12,7 +12,7 @@ using WolfMoss.ATAS.PriceMapping.Core;
 
 using DrawingColor = System.Drawing.Color;
 
-public sealed partial class FuturesReferencePriceAxisIndicator
+public abstract partial class FuturesReferencePriceAxisIndicatorBase
 {
     protected override void OnRender(RenderContext context, DrawingLayouts layout)
     {
@@ -37,8 +37,12 @@ public sealed partial class FuturesReferencePriceAxisIndicator
             return;
         }
 
+        Rectangle? axisRect = null;
+
         if (effectiveRatio is > 0m)
-            DrawReferenceAxis(context, pair, effectiveRatio.Value);
+            axisRect = DrawReferenceAxis(context, pair, effectiveRatio.Value);
+
+        DrawEditionOverlay(context, pair, effectiveRatio, axisRect);
 
         if (_showUpdateStatus)
         {
@@ -47,9 +51,36 @@ public sealed partial class FuturesReferencePriceAxisIndicator
                 : mapping;
             DrawStatusPanel(context, pair, attempt, statusMapping, effectiveRatio);
         }
+
+        DrawEditionForeground(context, pair, effectiveRatio, axisRect);
     }
 
-    private void DrawReferenceAxis(
+    protected virtual void DrawEditionOverlay(
+        RenderContext context,
+        InstrumentPair pair,
+        decimal? effectiveRatio,
+        Rectangle? axisRect)
+    {
+    }
+
+    protected virtual void DrawEditionForeground(
+        RenderContext context,
+        InstrumentPair pair,
+        decimal? effectiveRatio,
+        Rectangle? axisRect)
+    {
+    }
+
+    protected virtual int GetEditionReservedWidth(int actualAxisWidth)
+        => 0;
+
+    protected virtual IReadOnlyList<string> GetEditionStatusLines()
+        => Array.Empty<string>();
+
+    protected virtual int GetStatusPanelMaximumWidth()
+        => 330;
+
+    private Rectangle? DrawReferenceAxis(
         RenderContext context,
         InstrumentPair pair,
         decimal ratio)
@@ -58,7 +89,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         var region = priceContainer.Region;
 
         if (region.Height <= 0 || region.Width <= 0 || ratio <= 0m)
-            return;
+            return null;
 
         var width = Math.Min(_axisWidth, Math.Max(45, region.Width / 3));
         var axisRect = new Rectangle(region.X, region.Y, width, region.Height);
@@ -71,7 +102,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         var high = priceContainer.High;
 
         if (high <= low)
-            return;
+            return axisRect;
 
         var font = ChartInfo.PriceAxisFont;
         var ticks = _axisLayoutCache.GetOrCreate(new AxisLayoutKey(
@@ -126,6 +157,8 @@ public sealed partial class FuturesReferencePriceAxisIndicator
 
         if (_showCrosshairPriceLabel)
             DrawCrosshairPriceLabel(context, pair, ratio, axisRect, font);
+
+        return axisRect;
     }
 
     private void DrawCurrentPriceLabel(
@@ -225,22 +258,28 @@ public sealed partial class FuturesReferencePriceAxisIndicator
     {
         var region = ChartInfo!.PriceChartContainer.Region;
         var actualAxisWidth = Math.Min(_axisWidth, Math.Max(45, region.Width / 3));
-        var availableWidth = region.Width - actualAxisWidth - 16;
-        var panelWidth = Math.Min(330, availableWidth);
+        var editionWidth = GetEditionReservedWidth(actualAxisWidth);
+        var reservedWidth = actualAxisWidth + editionWidth;
+        var availableWidth = region.Width - reservedWidth - 16;
+        var panelWidth = Math.Min(GetStatusPanelMaximumWidth(), availableWidth);
+        var baseLines = GetStatusLines(pair, attempt, mapping, effectiveRatio);
+        var editionLines = GetEditionStatusLines();
+        var lines = editionLines.Count == 0
+            ? baseLines
+            : baseLines.Concat(editionLines).ToArray();
+        var panelHeight = 10 + lines.Length * 19;
 
-        if (panelWidth < 180 || region.Height < 130)
+        if (panelWidth < 180 || region.Height < panelHeight + 6)
             return;
 
         var panelRect = OffsetAndClampStatusRect(
             region,
-            region.X + actualAxisWidth + 8,
+            region.X + reservedWidth + 8,
             region.Y + 8,
             panelWidth,
-            124);
+            panelHeight);
         context.FillRectangle(_statusBackgroundColor, panelRect);
         DrawBorder(context, panelRect, _axisBorderColor);
-
-        var lines = GetStatusLines(pair, attempt, mapping, effectiveRatio);
 
         var statusColor = StateColor(attempt.State);
         var font = ChartInfo.PriceAxisFont;
@@ -337,7 +376,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         return new Rectangle(left, top, width, height);
     }
 
-    private static void DrawBorder(
+    protected static void DrawBorder(
         RenderContext context,
         Rectangle rect,
         DrawingColor color)
@@ -370,7 +409,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
             _ => state.ToString()
         };
 
-    private string FormatUiTime(DateTime? utcValue, bool includeSeconds)
+    protected string FormatUiTime(DateTime? utcValue, bool includeSeconds)
     {
         if (!utcValue.HasValue || utcValue.Value == DateTime.MinValue)
             return "--";
@@ -383,7 +422,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
             CultureInfo.InvariantCulture);
     }
 
-    private string FormatUtcOffsetLabel()
+    protected string FormatUtcOffsetLabel()
         => UiTimeZoneFormatter.FormatOffsetLabel(_uiUtcOffsetHours);
 
     private static string FormatPrice(decimal? value, int digits)

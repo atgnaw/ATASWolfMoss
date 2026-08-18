@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>WolfMoss.ATAS.PriceMapping</RootNamespace>
+    <AssemblyName>FuturesReferencePriceAxis.DealerHeatmap</AssemblyName>
+    <Version>2.0.0</Version>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+    <Authors>WolfMoss</Authors>
+    <Description>ATAS reference price axis Pro with Nightwatch Dealer Heatmap.</Description>
+    <ATASInstallDir Condition="'$(ATASInstallDir)' == ''">C:\Program Files (x86)\ATAS Platform</ATASInstallDir>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\FuturesReferencePriceAxis\**\*.cs"
+             Exclude="..\FuturesReferencePriceAxis\bin\**;..\FuturesReferencePriceAxis\obj\**;..\FuturesReferencePriceAxis\FuturesReferencePriceAxisIndicator.Entry.cs"
+             Link="Shared\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="**\*.cs" Exclude="bin\**;obj\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="ATAS.Indicators">
+      <HintPath>$(ATASInstallDir)\ATAS.Indicators.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ATAS.Types">
+      <HintPath>$(ATASInstallDir)\ATAS.Types.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="OFT.Attributes">
+      <HintPath>$(ATASInstallDir)\OFT.Attributes.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="OFT.Localization">
+      <HintPath>$(ATASInstallDir)\OFT.Localization.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="OFT.Rendering">
+      <HintPath>$(ATASInstallDir)\OFT.Rendering.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Utils.Common">
+      <HintPath>$(ATASInstallDir)\Utils.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

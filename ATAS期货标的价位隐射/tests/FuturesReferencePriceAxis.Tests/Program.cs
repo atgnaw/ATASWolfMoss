@@ -1,7 +1,16 @@
 using System.Text;
 using System.Text.Json;
+using System.Reflection;
+using System.Runtime.Loader;
+using System.Net.Http.Headers;
 
 using WolfMoss.ATAS.PriceMapping.Core;
+
+if (args.Contains("--live-dealer-heatmap", StringComparer.OrdinalIgnoreCase))
+{
+    await RunLiveDealerHeatmapCheck(args);
+    return;
+}
 
 if (args.Contains("--live-spx", StringComparer.OrdinalIgnoreCase))
 {
@@ -57,7 +66,15 @@ var tests = new (string Name, Action Run)[]
     ("New York and Chicago DST alignment", TestDstMarketTimeAlignment),
     ("Unified US session boundary rules", TestUnifiedSessionBoundaries),
     ("Axis layout cache invalidation", TestAxisLayoutCache),
-    ("Public settings compatibility baseline", TestPublicSettingsCompatibility)
+    ("Public settings compatibility baseline", TestPublicSettingsCompatibility),
+    ("Dealer Heatmap JSON parsing", TestDealerHeatmapParser),
+    ("Dealer Heatmap snapshot target filtering", TestDealerHeatmapSnapshot),
+    ("Dealer Heatmap parser rejection rules", TestDealerHeatmapParserRejections),
+    ("NYSE Dealer Heatmap target calendar", TestDealerHeatmapCalendar),
+    ("Dealer Heatmap aligned scheduling", TestDealerHeatmapSchedule),
+    ("Dealer Heatmap sparse presentation", TestDealerHeatmapPresentation),
+    ("Dealer Heatmap request identity and Retry-After", TestDealerHeatmapRequestPolicy),
+    ("Standard and Pro assembly compatibility", TestEditionAssemblies)
 };
 
 var failures = new List<string>();
@@ -735,6 +752,416 @@ static void TestAxisLayoutCache()
     Equal(3, cache.BuildCount);
 }
 
+static void TestDealerHeatmapParser()
+{
+    const string json =
+        """
+        {
+          "data": [{
+            "minute_at": "2026-08-14T19:55:00.000Z",
+            "expiration": "2026-08-14",
+            "spot_usd": 7785.68,
+            "cells": [{
+              "strike_usd": 7785,
+              "net_dealer_gex_usd": 1863784818
+            }]
+          }],
+          "_meta": { "request_id": "sanitized" }
+        }
+        """;
+    var frame = DealerHeatmapParser.ParseLatest(
+        Encoding.UTF8.GetBytes(json),
+        "SPX",
+        new DateOnly(2026, 8, 14));
+
+    Equal("SPX", frame.Ticker);
+    Equal(new DateOnly(2026, 8, 14), frame.Expiration);
+    Equal(new DateTime(2026, 8, 14, 19, 55, 0, DateTimeKind.Utc), frame.MinuteAtUtc);
+    Equal(7785.68m, frame.SpotUsd);
+    Equal(1, frame.Cells.Count);
+    Equal(7785m, frame.Cells[0].StrikeUsd);
+    Equal(1_863_784_818m, frame.Cells[0].NetDealerGexUsd);
+
+    const string sparseJson =
+        """
+        { "data": [{
+          "minute_at": "2026-08-14T19:45:00Z",
+          "expiration": "2026-08-14",
+          "spot_usd": 731.1,
+          "cells": [
+            { "strike_usd": 735, "net_dealer_gex_usd": 250000000 },
+            { "strike_usd": 725, "net_dealer_gex_usd": -500000000 },
+            { "strike_usd": 731, "net_dealer_gex_usd": 1000000 }
+          ]
+        }] }
+        """;
+    var sparse = DealerHeatmapParser.ParseLatest(
+        Encoding.UTF8.GetBytes(sparseJson),
+        "QQQ",
+        new DateOnly(2026, 8, 14));
+    Equal(3, sparse.Cells.Count);
+    Equal(725m, sparse.Cells[0].StrikeUsd);
+    Equal(735m, sparse.Cells[2].StrikeUsd);
+}
+
+static void TestDealerHeatmapSnapshot()
+{
+    const string json =
+        """
+        {
+          "data": {
+            "ticker": "QQQ",
+            "generated_at": "2026-08-17T12:55:00.000Z",
+            "session_date_et": "2026-08-17",
+            "spot_usd": 732.31,
+            "expirations": ["2026-08-17", "2026-08-18"],
+            "cells": [
+              { "strike_usd": 730, "expiration": "2026-08-18", "net_dealer_gex_usd": -9000000 },
+              { "strike_usd": 733, "expiration": "2026-08-17", "net_dealer_gex_usd": -12000000 },
+              { "strike_usd": 728, "expiration": "2026-08-17", "net_dealer_gex_usd": 43000000 }
+            ]
+          }
+        }
+        """;
+    var frame = DealerHeatmapParser.ParseSnapshot(
+        Encoding.UTF8.GetBytes(json),
+        "QQQ",
+        new DateOnly(2026, 8, 17));
+    Equal(new DateTime(2026, 8, 17, 12, 55, 0, DateTimeKind.Utc), frame.MinuteAtUtc);
+    Equal(new DateOnly(2026, 8, 17), frame.Expiration);
+    Equal(732.31m, frame.SpotUsd);
+    Equal(2, frame.Cells.Count);
+    Equal(728m, frame.Cells[0].StrikeUsd);
+    Equal(733m, frame.Cells[1].StrikeUsd);
+
+    Equal(
+        "EmptyCells",
+        Throws<DealerHeatmapDataException>(() =>
+            DealerHeatmapParser.ParseSnapshot(
+                Encoding.UTF8.GetBytes(json),
+                "QQQ",
+                new DateOnly(2026, 8, 19))).Code);
+}
+
+static void TestDealerHeatmapParserRejections()
+{
+    var target = new DateOnly(2026, 8, 14);
+    var empty = Throws<DealerHeatmapDataException>(() =>
+        DealerHeatmapParser.ParseLatest(
+            Encoding.UTF8.GetBytes("{\"data\":[]}"),
+            "SPX",
+            target));
+    Equal("EmptyData", empty.Code);
+
+    const string wrongExpiration =
+        """
+        { "data": [{
+          "minute_at": "2026-08-14T19:45:00Z",
+          "expiration": "2026-08-15",
+          "spot_usd": 7785,
+          "cells": [{ "strike_usd": 7785, "net_dealer_gex_usd": 1 }]
+        }] }
+        """;
+    Equal(
+        "ExpirationMismatch",
+        Throws<DealerHeatmapDataException>(() =>
+            DealerHeatmapParser.ParseLatest(
+                Encoding.UTF8.GetBytes(wrongExpiration),
+                "SPX",
+                target)).Code);
+
+    const string duplicateStrike =
+        """
+        { "data": [{
+          "minute_at": "2026-08-14T19:45:00Z",
+          "expiration": "2026-08-14",
+          "spot_usd": 7785,
+          "cells": [
+            { "strike_usd": 7785, "net_dealer_gex_usd": 1 },
+            { "strike_usd": 7785, "net_dealer_gex_usd": -1 }
+          ]
+        }] }
+        """;
+    Equal(
+        "DuplicateStrike",
+        Throws<DealerHeatmapDataException>(() =>
+            DealerHeatmapParser.ParseLatest(
+                Encoding.UTF8.GetBytes(duplicateStrike),
+                "SPX",
+                target)).Code);
+}
+
+static void TestDealerHeatmapCalendar()
+{
+    Assert(NyseTradingCalendar.IsTradingDay(new DateTime(2021, 12, 31)));
+
+    var sunday = NyseTradingCalendar.ResolveTarget(
+        new DateTime(2026, 8, 16, 16, 0, 0, DateTimeKind.Utc),
+        "SPX");
+    Equal(new DateOnly(2026, 8, 17), sunday.TargetExpiration);
+    Equal(DealerHeatmapSessionState.NextSession, sunday.SessionState);
+
+    var fridayAfterClose = NyseTradingCalendar.ResolveTarget(
+        new DateTime(2026, 8, 14, 21, 30, 0, DateTimeKind.Utc),
+        "QQQ");
+    Equal(new DateOnly(2026, 8, 17), fridayAfterClose.TargetExpiration);
+
+    var goodFriday = NyseTradingCalendar.ResolveTarget(
+        new DateTime(2026, 4, 3, 14, 0, 0, DateTimeKind.Utc),
+        "SPX");
+    Equal(new DateOnly(2026, 4, 6), goodFriday.TargetExpiration);
+
+    var halfDay = new DateTime(2026, 11, 27);
+    Assert(NyseTradingCalendar.IsEarlyClose(halfDay));
+    Equal(NyseTradingCalendar.EarlyClose, NyseTradingCalendar.GetRegularClose(halfDay));
+    var afterHalfDayClose = NyseTradingCalendar.ResolveTarget(
+        new DateTime(2026, 11, 27, 19, 0, 0, DateTimeKind.Utc),
+        "SPX");
+    Equal(new DateOnly(2026, 11, 30), afterHalfDayClose.TargetExpiration);
+
+    var premarket = NyseTradingCalendar.ResolveTarget(
+        new DateTime(2026, 8, 17, 12, 0, 0, DateTimeKind.Utc),
+        "QQQ");
+    Equal(new DateOnly(2026, 8, 17), premarket.TargetExpiration);
+    Equal(DealerHeatmapSessionState.NextSession, premarket.SessionState);
+}
+
+static void TestDealerHeatmapSchedule()
+{
+    Equal(
+        new DateTime(2026, 8, 17, 13, 35, 20, DateTimeKind.Utc),
+        DealerHeatmapSchedule.CalculateNextAttemptUtc(
+            new DateTime(2026, 8, 17, 13, 31, 0, DateTimeKind.Utc),
+            5,
+            60));
+    Equal(
+        new DateTime(2026, 1, 5, 14, 35, 20, DateTimeKind.Utc),
+        DealerHeatmapSchedule.CalculateNextAttemptUtc(
+            new DateTime(2026, 1, 5, 14, 31, 0, DateTimeKind.Utc),
+            5,
+            60));
+    Equal(
+        new DateTime(2026, 8, 17, 13, 40, 20, DateTimeKind.Utc),
+        DealerHeatmapSchedule.CalculateNextAttemptUtc(
+            new DateTime(2026, 8, 17, 13, 35, 21, DateTimeKind.Utc),
+            5,
+            60));
+
+    var now = new DateTime(2026, 8, 16, 16, 0, 0, DateTimeKind.Utc);
+    var retryAt = now.AddHours(2);
+    Equal(
+        retryAt,
+        DealerHeatmapSchedule.CalculateNextAttemptUtc(now, 5, 60, retryAt));
+    Equal(10, DealerHeatmapSchedule.NormalizeMinutes(6, 5, 60));
+    Equal(60, DealerHeatmapSchedule.NormalizeMinutes(61, 5, 60));
+    Equal(
+        new DateTime(2026, 8, 17, 13, 35, 0, DateTimeKind.Utc),
+        DealerHeatmapSchedule.GetSampleBucketUtc(
+            new DateTime(2026, 8, 17, 13, 39, 59, DateTimeKind.Utc)));
+}
+
+static void TestDealerHeatmapPresentation()
+{
+    Equal(1m, DealerHeatmapPresentation.GetStrikeStep("QQQ"));
+    Equal(5m, DealerHeatmapPresentation.GetStrikeStep("SPX"));
+    Equal(
+        (7782.5m, 7787.5m),
+        DealerHeatmapPresentation.GetReferenceBounds("SPX", 7785m));
+    Equal(
+        (730.5m, 731.5m),
+        DealerHeatmapPresentation.GetReferenceBounds("QQQ", 731m));
+    Equal("350K", DealerHeatmapPresentation.FormatGex(350_000m));
+    Equal("-2.04M", DealerHeatmapPresentation.FormatGex(-2_041_000m));
+    Equal("1.86B", DealerHeatmapPresentation.FormatGex(1_863_784_818m));
+
+    var negative = DealerHeatmapPresentation.GetColor(-100m, -100m, 200m);
+    var neutral = DealerHeatmapPresentation.GetColor(0m, -100m, 200m);
+    var positive = DealerHeatmapPresentation.GetColor(200m, -100m, 200m);
+    Equal(new HeatmapRgb(75, 13, 91), negative);
+    Equal(new HeatmapRgb(216, 92, 98), neutral);
+    Equal(new HeatmapRgb(255, 230, 0), positive);
+    Assert(!DealerHeatmapPresentation.UseDarkText(negative));
+    Assert(DealerHeatmapPresentation.UseDarkText(positive));
+}
+
+static void TestDealerHeatmapRequestPolicy()
+{
+    var expiration = new DateOnly(2026, 8, 17);
+    var first = DealerHeatmapRequestIdentity.Create(
+        "test-key-one",
+        "qqq",
+        expiration,
+        new DateTime(2026, 8, 17, 13, 36, 0, DateTimeKind.Utc));
+    var sameBucket = DealerHeatmapRequestIdentity.Create(
+        "test-key-one",
+        "QQQ",
+        expiration,
+        new DateTime(2026, 8, 17, 13, 39, 59, DateTimeKind.Utc));
+    var differentKey = DealerHeatmapRequestIdentity.Create(
+        "test-key-two",
+        "QQQ",
+        expiration,
+        new DateTime(2026, 8, 17, 13, 36, 0, DateTimeKind.Utc));
+    Equal(first, sameBucket);
+    Assert(first != differentKey);
+    Assert(!first.CredentialFingerprint.Contains("test-key", StringComparison.Ordinal));
+
+    var now = new DateTime(2026, 8, 17, 13, 30, 0, DateTimeKind.Utc);
+    Equal(
+        now.AddSeconds(45),
+        DealerHeatmapRetryPolicy.ResolveRetryAfterUtc(
+            now,
+            TimeSpan.FromSeconds(45),
+            null));
+    Equal(
+        now.AddMinutes(3),
+        DealerHeatmapRetryPolicy.ResolveRetryAfterUtc(
+            now,
+            null,
+            new DateTimeOffset(now.AddMinutes(3))));
+}
+
+static void TestEditionAssemblies()
+{
+    var root = FindRepositoryRoot();
+#if DEBUG
+    const string configuration = "Debug";
+#else
+    const string configuration = "Release";
+#endif
+    var standardPath = Path.GetFullPath(Path.Combine(
+        root,
+        "src",
+        "FuturesReferencePriceAxis",
+        "bin",
+        configuration,
+        "FuturesReferencePriceAxis.dll"));
+    var proPath = Path.GetFullPath(Path.Combine(
+        root,
+        "src",
+        "FuturesReferencePriceAxis.DealerHeatmap",
+        "bin",
+        configuration,
+        "FuturesReferencePriceAxis.DealerHeatmap.dll"));
+    Assert(File.Exists(standardPath), standardPath);
+    Assert(File.Exists(proPath), proPath);
+
+    Assembly? ResolveAtasAssembly(AssemblyLoadContext context, AssemblyName name)
+    {
+        var candidate = Path.Combine(
+            @"C:\Program Files (x86)\ATAS Platform",
+            name.Name + ".dll");
+        return File.Exists(candidate)
+            ? context.LoadFromAssemblyPath(candidate)
+            : null;
+    }
+
+    AssemblyLoadContext.Default.Resolving += ResolveAtasAssembly;
+
+    try
+    {
+        var standard = AssemblyLoadContext.Default.LoadFromAssemblyPath(standardPath);
+        var pro = AssemblyLoadContext.Default.LoadFromAssemblyPath(proPath);
+        Equal(new Version(1, 1, 0, 0), standard.GetName().Version!);
+        Equal(new Version(2, 0, 0, 0), pro.GetName().Version!);
+
+        var standardType = standard.GetType(
+            "WolfMoss.ATAS.PriceMapping.FuturesReferencePriceAxisIndicator",
+            throwOnError: true)!;
+        var proType = pro.GetType(
+            "WolfMoss.ATAS.PriceMapping.FuturesReferencePriceAxisDealerHeatmapIndicator",
+            throwOnError: true)!;
+        Assert(!standardType.IsAbstract && !proType.IsAbstract);
+        Assert(standardType.FullName != proType.FullName);
+
+        static bool IsConcreteAtasIndicator(Type type)
+        {
+            if (type.IsAbstract)
+                return false;
+
+            for (var current = type.BaseType; current != null; current = current.BaseType)
+            {
+                if (current.FullName == "ATAS.Indicators.Indicator")
+                    return true;
+            }
+
+            return false;
+        }
+
+        var standardIndicators = standard.GetTypes()
+            .Where(IsConcreteAtasIndicator)
+            .ToArray();
+        var proIndicators = pro.GetTypes()
+            .Where(IsConcreteAtasIndicator)
+            .ToArray();
+        Equal(1, standardIndicators.Length);
+        Equal(standardType, standardIndicators[0]);
+        Equal(1, proIndicators.Length);
+        Equal(proType, proIndicators[0]);
+
+        var standardProperties = standardType
+            .GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .Select(static property => property.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var property in new[]
+                 {
+                     "PairMode", "MappingMode", "ManualRatio",
+                     "RefreshIntervalMinutes", "MaxQuoteAgeMinutes",
+                     "ShowUpdateStatus", "StatusPanelOffsetX",
+                     "StatusPanelOffsetY", "UiUtcOffsetHours",
+                     "ShowCrosshairPriceLabel", "AxisWidth", "AxisTextColor",
+                     "AxisBackgroundColor", "AxisBorderColor", "StatusBackgroundColor"
+                 })
+        {
+            Assert(standardProperties.Contains(property), property);
+        }
+
+        var proProperties = proType
+            .GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .ToDictionary(static property => property.Name, StringComparer.Ordinal);
+        foreach (var property in new[]
+                 {
+                     "ShowDealerHeatmap", "NightwatchApiKey",
+                     "DealerHeatmapRthRefreshMinutes",
+                     "DealerHeatmapOffHoursRefreshMinutes"
+                 })
+        {
+            Assert(proProperties.ContainsKey(property), property);
+        }
+
+        Assert(proProperties["NightwatchApiKey"]
+            .GetCustomAttributes()
+            .Any(static attribute =>
+                attribute.GetType().FullName
+                == "System.ComponentModel.PasswordPropertyTextAttribute"));
+
+        var proSettingsSource = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "FuturesReferencePriceAxis.DealerHeatmap",
+            "FuturesReferencePriceAxisDealerHeatmapIndicator.Settings.cs"));
+        foreach (var declaration in new[]
+                 {
+                     "private bool _showDealerHeatmap = true;",
+                     "private string _nightwatchApiKey = string.Empty;",
+                     "private int _dealerHeatmapRthRefreshMinutes = 5;",
+                     "private int _dealerHeatmapOffHoursRefreshMinutes = 60;"
+                 })
+        {
+            Assert(proSettingsSource.Contains(declaration, StringComparison.Ordinal));
+        }
+
+        var standardBytes = File.ReadAllBytes(standardPath);
+        var standardText = Encoding.UTF8.GetString(standardBytes);
+        Assert(!standardText.Contains("Nightwatch", StringComparison.Ordinal));
+        Assert(!standardText.Contains("DealerHeatmap", StringComparison.Ordinal));
+    }
+    finally
+    {
+        AssemblyLoadContext.Default.Resolving -= ResolveAtasAssembly;
+    }
+}
+
 static void TestPublicSettingsCompatibility()
 {
     var root = FindRepositoryRoot();
@@ -848,6 +1275,44 @@ static string CreateMarketWatchJson(long[] timestamps, string[] closes)
             }
         }
     });
+}
+
+static async Task RunLiveDealerHeatmapCheck(string[] arguments)
+{
+    var apiKey = Environment.GetEnvironmentVariable("YEHANGSHE_API_KEY");
+
+    if (string.IsNullOrWhiteSpace(apiKey))
+        throw new InvalidOperationException("YEHANGSHE_API_KEY is required for the opt-in live check.");
+
+    var tickerArgument = arguments.FirstOrDefault(static value =>
+        value.StartsWith("--ticker=", StringComparison.OrdinalIgnoreCase));
+    var ticker = tickerArgument?["--ticker=".Length..].ToUpperInvariant() ?? "SPX";
+
+    if (ticker is not ("SPX" or "QQQ"))
+        throw new ArgumentException("--ticker must be SPX or QQQ.");
+
+    var target = NyseTradingCalendar.ResolveTarget(DateTime.UtcNow, ticker);
+    var url = "https://api.yehangshe.com/v1/derived/heatmap/"
+              + ticker
+              + "/snapshot";
+    using var client = new HttpClient
+    {
+        Timeout = TimeSpan.FromSeconds(10)
+    };
+    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+    request.Headers.Accept.ParseAdd("application/json");
+    using var response = await client.SendAsync(request);
+    response.EnsureSuccessStatusCode();
+    var json = await response.Content.ReadAsByteArrayAsync();
+    var frame = DealerHeatmapParser.ParseSnapshot(
+        json,
+        ticker,
+        target.TargetExpiration);
+    Console.WriteLine(
+        $"LIVE  {frame.Ticker} expiration={frame.Expiration:yyyy-MM-dd}"
+        + $" minute={frame.MinuteAtUtc:yyyy-MM-dd HH:mm:ss} UTC"
+        + $" cells={frame.Cells.Count} spot={frame.SpotUsd}");
 }
 
 static async Task RunLiveSpxCheck()

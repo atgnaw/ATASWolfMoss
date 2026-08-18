@@ -1,26 +1,19 @@
 namespace WolfMoss.ATAS.PriceMapping;
 
 using System.Collections.Concurrent;
-using System.ComponentModel;
 using System.Drawing;
 
 using global::ATAS.Indicators;
 
-using OFT.Attributes;
-using OFT.Localization;
 using OFT.Rendering.Tools;
 
 using WolfMoss.ATAS.PriceMapping.Core;
 
 using DrawingColor = System.Drawing.Color;
 
-[DisplayName("Futures Reference Price Axis / 期货现货映射轴")]
-[Category(IndicatorCategories.Other)]
-[Description("NQ/MNQ→QQQ and ES/MES→SPX time-aligned left reference price axis.")]
-[HelpLink("https://docs.atas.net/en/")]
-public sealed partial class FuturesReferencePriceAxisIndicator : Indicator
+public abstract partial class FuturesReferencePriceAxisIndicatorBase : Indicator
 {
-    private static readonly RenderStringFormat CenteredStringFormat = new()
+    protected static readonly RenderStringFormat CenteredStringFormat = new()
     {
         Alignment = StringAlignment.Center,
         LineAlignment = StringAlignment.Center
@@ -32,7 +25,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator : Indicator
         LineAlignment = StringAlignment.Center
     };
 
-    private static readonly RenderStringFormat LeftCenteredStringFormat = new()
+    protected static readonly RenderStringFormat LeftCenteredStringFormat = new()
     {
         Alignment = StringAlignment.Near,
         LineAlignment = StringAlignment.Center
@@ -88,7 +81,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator : Indicator
     private DrawingColor _axisBorderColor = DrawingColor.FromArgb(255, 92, 105, 121);
     private DrawingColor _statusBackgroundColor = DrawingColor.FromArgb(225, 18, 22, 28);
 
-    public FuturesReferencePriceAxisIndicator()
+    protected FuturesReferencePriceAxisIndicatorBase()
         : base(true)
     {
         Panel = IndicatorDataProvider.CandlesPanel;
@@ -101,6 +94,45 @@ public sealed partial class FuturesReferencePriceAxisIndicator : Indicator
 
     public override string ToString()
         => $"Reference Axis ({_mappingMode}, {_pairMode})";
+
+    protected bool IsIndicatorInitialized => _initialized;
+
+    protected PairMode ConfiguredPairMode => _pairMode;
+
+    protected decimal ConfiguredUiUtcOffsetHours => _uiUtcOffsetHours;
+
+    protected DrawingColor ConfiguredAxisTextColor => _axisTextColor;
+
+    protected DrawingColor ConfiguredAxisBorderColor => _axisBorderColor;
+
+    protected decimal LatestChartPrice
+    {
+        get
+        {
+            lock (_priceSync)
+                return _latestChartPrice;
+        }
+    }
+
+    protected virtual void OnEditionInitialized()
+    {
+    }
+
+    protected virtual void OnEditionFinishRecalculate()
+    {
+    }
+
+    protected virtual void OnEditionDataProviderChanged()
+    {
+    }
+
+    protected virtual void OnEditionConfigurationChanged()
+    {
+    }
+
+    protected virtual void OnEditionDisposing()
+    {
+    }
 
     private enum RefreshOutcome
     {

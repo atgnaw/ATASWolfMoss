@@ -28,7 +28,7 @@ public static class UsMarketClock
     {
         date = date.Date;
         var year = date.Year;
-        return date == ObservedHoliday(new DateTime(year, 1, 1))
+        return date == ObservedNewYear(new DateTime(year, 1, 1))
                || date == NthWeekday(year, 1, DayOfWeek.Monday, 3)
                || date == NthWeekday(year, 2, DayOfWeek.Monday, 3)
                || date == EasterSunday(year).AddDays(-2)
@@ -37,8 +37,7 @@ public static class UsMarketClock
                || date == ObservedHoliday(new DateTime(year, 7, 4))
                || date == NthWeekday(year, 9, DayOfWeek.Monday, 1)
                || date == NthWeekday(year, 11, DayOfWeek.Thursday, 4)
-               || date == ObservedHoliday(new DateTime(year, 12, 25))
-               || date == ObservedHoliday(new DateTime(year + 1, 1, 1));
+               || date == ObservedHoliday(new DateTime(year, 12, 25));
     }
 
     public static TimeSpan GetUtcOffset(TimeZoneInfo timeZone, DateTime utcTime)
@@ -56,6 +55,11 @@ public static class UsMarketClock
             DayOfWeek.Sunday => holiday.AddDays(1),
             _ => holiday
         };
+
+    private static DateTime ObservedNewYear(DateTime holiday)
+        => holiday.DayOfWeek == DayOfWeek.Sunday
+            ? holiday.AddDays(1)
+            : holiday;
 
     private static DateTime NthWeekday(
         int year,

@@ -41,6 +41,9 @@ public sealed class ReferenceQuoteCoordinator<TKey, TValue>
 
         lock (_sync)
         {
+            if (_entries.Count > 256)
+                PruneExpiredEntries(now);
+
             if (!_entries.TryGetValue(key, out var entry))
             {
                 entry = new Entry();
@@ -60,6 +63,21 @@ public sealed class ReferenceQuoteCoordinator<TKey, TValue>
         }
 
         return await sharedRequest.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void PruneExpiredEntries(DateTime now)
+    {
+        foreach (var pair in _entries.ToArray())
+        {
+            var entry = pair.Value;
+
+            if (entry.InFlight == null
+                && (!entry.HasValue || now >= entry.ValueExpiresUtc)
+                && (entry.Error == null || now >= entry.ErrorExpiresUtc))
+            {
+                _entries.Remove(pair.Key);
+            }
+        }
     }
 
     private async Task<TValue> FetchAndStoreAsync(

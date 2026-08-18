@@ -4,7 +4,7 @@ using global::ATAS.Indicators;
 
 using WolfMoss.ATAS.PriceMapping.Core;
 
-public sealed partial class FuturesReferencePriceAxisIndicator
+public abstract partial class FuturesReferencePriceAxisIndicatorBase
 {
     protected override void OnInitialize()
     {
@@ -17,6 +17,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         SetAttempt(UpdateAttemptSnapshot.Waiting(
             CurrentUtcTime(),
             "等待图表历史数据就绪"));
+        OnEditionInitialized();
         _ = StartInitializationFallbackAsync(_lifetimeCancellation.Token);
     }
 
@@ -29,6 +30,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
 
         EnsureTradesCache();
         RestartSchedule();
+        OnEditionFinishRecalculate();
     }
 
     protected override void OnDataProviderChanged(
@@ -48,12 +50,14 @@ public sealed partial class FuturesReferencePriceAxisIndicator
 
         if (newDataProvider == null)
         {
+            OnEditionDataProviderChanged();
             SetFailure("等待 ATAS 数据连接，连接后自动重试");
             return;
         }
 
         EnsureTradesCache();
         RestartSchedule();
+        OnEditionDataProviderChanged();
     }
 
     private async Task StartInitializationFallbackAsync(
@@ -79,6 +83,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
 
     protected override void OnDispose()
     {
+        OnEditionDisposing();
         _initialized = false;
         Interlocked.Increment(ref _generation);
 

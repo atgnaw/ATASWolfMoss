@@ -5,7 +5,7 @@ using System.Net.Http;
 
 using WolfMoss.ATAS.PriceMapping.Core;
 
-public sealed partial class FuturesReferencePriceAxisIndicator
+public abstract partial class FuturesReferencePriceAxisIndicatorBase
 {
     private void RestartSchedule()
     {
@@ -409,6 +409,8 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         Interlocked.Increment(ref _generation);
         Volatile.Write(ref _pendingReference, null);
 
+        OnEditionConfigurationChanged();
+
         if (!_initialized)
             return;
 
@@ -446,7 +448,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         }
     }
 
-    private DateTime CurrentUtcTime()
+    protected DateTime CurrentUtcTime()
     {
         try
         {
@@ -464,7 +466,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         return generation == Interlocked.Read(ref _generation);
     }
 
-    private void RequestRedraw()
+    protected void RequestRedraw()
     {
         if (!_initialized || DataProvider == null)
             return;
@@ -478,7 +480,7 @@ public sealed partial class FuturesReferencePriceAxisIndicator
         }
     }
 
-    private static string ShortMessage(Exception exception)
+    protected static string ShortMessage(Exception exception)
     {
         var message = exception.Message.ReplaceLineEndings(" ").Trim();
         return message.Length <= 100 ? message : message[..100];

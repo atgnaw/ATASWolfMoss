@@ -1,0 +1,2 @@
+# Local Codex MCP configuration may reference user-specific credentials.
+.codex/config.toml

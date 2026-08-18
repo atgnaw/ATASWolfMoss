@@ -6,7 +6,7 @@ using WolfMoss.ATAS.PriceMapping.Core;
 
 using DrawingColor = System.Drawing.Color;
 
-public sealed partial class FuturesReferencePriceAxisIndicator
+public abstract partial class FuturesReferencePriceAxisIndicatorBase
 {
     [Display(
         Name = "Pair / 映射组合",
