@@ -72,8 +72,15 @@ var tests = new (string Name, Action Run)[]
     ("Dealer Heatmap parser rejection rules", TestDealerHeatmapParserRejections),
     ("NYSE Dealer Heatmap target calendar", TestDealerHeatmapCalendar),
     ("Dealer Heatmap aligned scheduling", TestDealerHeatmapSchedule),
+    ("Dealer five-minute bucket sample semantics", TestDealerSamplingTime),
     ("Dealer Heatmap sparse presentation", TestDealerHeatmapPresentation),
     ("Dealer Heatmap request identity and Retry-After", TestDealerHeatmapRequestPolicy),
+    ("Dealer GEX JSON parsing", TestDealerGexParser),
+    ("Dealer GEX parser rejection rules", TestDealerGexParserRejections),
+    ("Dealer GEX presentation and structure labels", TestDealerGexPresentation),
+    ("Dealer data column layout combinations", TestDealerColumnsLayout),
+    ("Dealer GEX session states", TestDealerGexSessionStates),
+    ("Dealer GEX request identity and shared Retry-After", TestDealerGexRequestPolicy),
     ("Standard and Pro assembly compatibility", TestEditionAssemblies)
 };
 
@@ -960,6 +967,19 @@ static void TestDealerHeatmapSchedule()
             new DateTime(2026, 8, 17, 13, 39, 59, DateTimeKind.Utc)));
 }
 
+static void TestDealerSamplingTime()
+{
+    Equal(
+        new DateTime(2026, 8, 17, 13, 34, 0, DateTimeKind.Utc),
+        DealerSamplingTime.FromBucketStartUtc(
+            new DateTime(2026, 8, 17, 13, 30, 0, DateTimeKind.Utc)));
+    Equal(
+        new DateTime(2026, 8, 18, 0, 3, 0, DateTimeKind.Utc),
+        DealerSamplingTime.FromBucketStartUtc(
+            new DateTime(2026, 8, 17, 23, 59, 0, DateTimeKind.Utc)));
+    Equal(TimeSpan.FromMinutes(4), DealerSamplingTime.SampleOffset);
+}
+
 static void TestDealerHeatmapPresentation()
 {
     Equal(1m, DealerHeatmapPresentation.GetStrikeStep("QQQ"));
@@ -1018,7 +1038,253 @@ static void TestDealerHeatmapRequestPolicy()
         DealerHeatmapRetryPolicy.ResolveRetryAfterUtc(
             now,
             null,
-            new DateTimeOffset(now.AddMinutes(3))));
+        new DateTimeOffset(now.AddMinutes(3))));
+}
+
+static void TestDealerGexParser()
+{
+    const string json =
+        """
+        {
+          "data": {
+            "ticker": "SPX",
+            "snapshot_at": "2026-08-17T19:55:00.000Z",
+            "session_date_et": "2026-08-17",
+            "state": "fresh",
+            "spot_usd": 7748.76,
+            "strikes": [
+              { "strike_usd": 7765, "net_gex_usd": -41190000, "node_type": null, "rank": 5, "relative_strength": 0.001 },
+              { "strike_usd": 7745, "net_gex_usd": -408350000, "node_type": "king", "rank": 1, "relative_strength": 1 },
+              { "strike_usd": 7750, "net_gex_usd": -229890000, "node_type": "gatekeeper", "rank": 2, "relative_strength": 0.1723 },
+              { "strike_usd": 7755, "net_gex_usd": -200950000, "node_type": null, "rank": 3, "relative_strength": 0.1151 },
+              { "strike_usd": 7760, "net_gex_usd": -70650000, "node_type": null, "rank": 4, "relative_strength": 0.005 }
+            ],
+            "summary": {
+              "total_gex_usd": -951030000,
+              "king_strike_usd": 7745,
+              "gamma_flip_usd": 7781.7889,
+              "call_wall_strike_usd": 7750,
+              "put_wall_strike_usd": 7745,
+              "major_positive_strike_usd": 7785,
+              "major_negative_strike_usd": 7745
+            }
+          }
+        }
+        """;
+    var frame = DealerGexParser.ParseSnapshot(
+        Encoding.UTF8.GetBytes(json),
+        "SPX");
+    Equal("SPX", frame.Ticker);
+    Equal(new DateTime(2026, 8, 17, 19, 55, 0, DateTimeKind.Utc), frame.SnapshotAtUtc);
+    Equal(new DateOnly(2026, 8, 17), frame.SessionDateEt);
+    Equal("fresh", frame.ApiState);
+    Equal(7748.76m, frame.SpotUsd);
+    Equal(5, frame.Nodes.Count);
+    Equal(7745m, frame.Nodes[0].StrikeUsd);
+    Equal("king", frame.Nodes[0].NodeType);
+    Equal(1, frame.Nodes[0].Rank);
+    Equal(1m, frame.Nodes[0].RelativeStrength);
+    Equal("standard", frame.Nodes[2].NodeType);
+    Equal("standard", frame.Nodes[4].NodeType);
+    Equal(7781.7889m, frame.Summary.GammaFlipUsd);
+    Equal(7750m, frame.Summary.CallWallStrikeUsd);
+    Equal(7745m, frame.Summary.PutWallStrikeUsd);
+
+    const string emptyNodes =
+        """
+        { "data": {
+          "ticker": "QQQ",
+          "snapshot_at": "2026-08-17T13:25:00Z",
+          "session_date_et": "2026-08-17",
+          "state": "stale",
+          "spot_usd": 732.31,
+          "strikes": [],
+          "summary": { "total_gex_usd": 0, "gamma_flip_usd": null }
+        } }
+        """;
+    var empty = DealerGexParser.ParseSnapshot(
+        Encoding.UTF8.GetBytes(emptyNodes),
+        "QQQ");
+    Equal(0, empty.Nodes.Count);
+    Equal(0m, empty.Summary.TotalGexUsd);
+    Equal<decimal?>(null, empty.Summary.GammaFlipUsd);
+    Equal<decimal?>(null, empty.Summary.CallWallStrikeUsd);
+}
+
+static void TestDealerGexParserRejections()
+{
+    const string wrongTicker =
+        """
+        { "data": {
+          "ticker": "QQQ", "snapshot_at": "2026-08-17T14:00:00Z",
+          "session_date_et": "2026-08-17", "state": "fresh", "spot_usd": 730,
+          "strikes": [], "summary": {}
+        } }
+        """;
+    Equal(
+        "TickerMismatch",
+        Throws<DealerGexDataException>(() => DealerGexParser.ParseSnapshot(
+            Encoding.UTF8.GetBytes(wrongTicker),
+            "SPX")).Code);
+
+    const string duplicate =
+        """
+        { "data": {
+          "ticker": "QQQ", "snapshot_at": "2026-08-17T14:00:00Z",
+          "session_date_et": "2026-08-17", "state": "fresh", "spot_usd": 730,
+          "strikes": [
+            { "strike_usd": 730, "net_gex_usd": 1, "node_type": "king", "rank": 1, "relative_strength": 1 },
+            { "strike_usd": 730, "net_gex_usd": -1, "node_type": "minor", "rank": 2, "relative_strength": 0.5 }
+          ], "summary": {}
+        } }
+        """;
+    Equal(
+        "DuplicateStrike",
+        Throws<DealerGexDataException>(() => DealerGexParser.ParseSnapshot(
+            Encoding.UTF8.GetBytes(duplicate),
+            "QQQ")).Code);
+
+    const string invalidNode =
+        """
+        { "data": {
+          "ticker": "QQQ", "snapshot_at": "2026-08-17T14:00:00Z",
+          "session_date_et": "2026-08-17", "state": "fresh", "spot_usd": 730,
+          "strikes": [
+            { "strike_usd": 730, "net_gex_usd": 1, "node_type": null, "rank": 1, "relative_strength": 1.1 }
+          ], "summary": {}
+        } }
+        """;
+    Equal(
+        "InvalidNode",
+        Throws<DealerGexDataException>(() => DealerGexParser.ParseSnapshot(
+            Encoding.UTF8.GetBytes(invalidNode),
+            "QQQ")).Code);
+
+    const string tooMany =
+        """
+        { "data": {
+          "ticker": "QQQ", "snapshot_at": "2026-08-17T14:00:00Z",
+          "session_date_et": "2026-08-17", "state": "fresh", "spot_usd": 730,
+          "strikes": [ {}, {}, {}, {}, {}, {} ], "summary": {}
+        } }
+        """;
+    Equal(
+        "TooManyNodes",
+        Throws<DealerGexDataException>(() => DealerGexParser.ParseSnapshot(
+            Encoding.UTF8.GetBytes(tooMany),
+            "QQQ")).Code);
+}
+
+static void TestDealerGexPresentation()
+{
+    Equal(1m, DealerGexPresentation.GetFillRatio(-408m, 408m));
+    Equal(0.5m, DealerGexPresentation.GetFillRatio(204m, 408m));
+    Equal(0m, DealerGexPresentation.GetFillRatio(0m, 0m));
+    Equal(new DealerGexRgb(224, 74, 82), DealerGexPresentation.GetNodeColor(-1m, "minor"));
+    Equal(new DealerGexRgb(47, 158, 101), DealerGexPresentation.GetNodeColor(1m, "gatekeeper"));
+    Equal(new DealerGexRgb(245, 247, 250), DealerGexPresentation.GetNodeColor(-1m, "KING"));
+    Assert(DealerGexPresentation.UseDarkText("king"));
+    Assert(!DealerGexPresentation.UseDarkText("gatekeeper"));
+    Equal("7745", DealerGexPresentation.FormatStrike(7745m));
+    Equal("7745.25", DealerGexPresentation.FormatStrike(7745.25m));
+    Assert(!DealerGexPresentation.FormatStrike(7745m).Contains('$'));
+
+    var labels = DealerGexPresentation.ResolveLabelTops(
+        [100, 102, 104],
+        90,
+        150,
+        14,
+        1);
+    Equal(3, labels.Count);
+    Assert(labels[1] >= labels[0] + 15);
+    Assert(labels[2] >= labels[1] + 15);
+    Assert(labels[0] >= 90 && labels[2] + 14 <= 150);
+}
+
+static void TestDealerColumnsLayout()
+{
+    var both = DealerColumnsLayout.Calculate(72, 72, true, true);
+    Equal(72, both.HeatmapLeft);
+    Equal(144, both.DealerGexLeft);
+    Equal(2, both.DataColumnCount);
+    Equal(144, both.ReservedEditionWidth);
+
+    var heatmapOnly = DealerColumnsLayout.Calculate(72, 72, true, false);
+    Equal(72, heatmapOnly.HeatmapLeft);
+    Equal(-1, heatmapOnly.DealerGexLeft);
+    Equal(1, heatmapOnly.DataColumnCount);
+
+    var gexOnly = DealerColumnsLayout.Calculate(72, 72, false, true);
+    Equal(-1, gexOnly.HeatmapLeft);
+    Equal(72, gexOnly.DealerGexLeft);
+    Equal(1, gexOnly.DataColumnCount);
+
+    var neither = DealerColumnsLayout.Calculate(72, 72, false, false);
+    Equal(0, neither.DataColumnCount);
+    Equal(0, neither.ReservedEditionWidth);
+    Equal(60, DealerColumnsLayout.CalculateColumnWidth(72, 300, true, true));
+    Equal(72, DealerColumnsLayout.CalculateColumnWidth(72, 300, true, false));
+    Equal(20, DealerColumnsLayout.CalculateColumnWidth(72, 100, true, true));
+}
+
+static void TestDealerGexSessionStates()
+{
+    var frame = new DealerGexFrame(
+        "SPX",
+        new DateTime(2026, 8, 17, 14, 0, 0, DateTimeKind.Utc),
+        new DateOnly(2026, 8, 17),
+        "fresh",
+        7748m,
+        Array.Empty<DealerGexNode>(),
+        new DealerGexSummary(null, null, null, null, null, null, null));
+    Equal(
+        DealerGexState.Live,
+        DealerGexSessionPolicy.ResolveState(
+            new DateTime(2026, 8, 17, 14, 1, 0, DateTimeKind.Utc),
+            frame));
+    Equal(
+        DealerGexState.Closed,
+        DealerGexSessionPolicy.ResolveState(
+            new DateTime(2026, 8, 17, 12, 0, 0, DateTimeKind.Utc),
+            frame));
+    Equal(
+        DealerGexState.Closed,
+        DealerGexSessionPolicy.ResolveState(
+            new DateTime(2026, 8, 16, 16, 0, 0, DateTimeKind.Utc),
+            frame));
+    Equal(
+        DealerGexState.Frozen,
+        DealerGexSessionPolicy.ResolveState(
+            new DateTime(2026, 8, 18, 14, 0, 0, DateTimeKind.Utc),
+            frame));
+    Equal(
+        DealerGexState.Frozen,
+        DealerGexSessionPolicy.ResolveState(
+            new DateTime(2026, 8, 17, 14, 1, 0, DateTimeKind.Utc),
+            frame with { ApiState = "stale" }));
+    Assert(!Enum.GetNames<DealerGexState>().Contains("NextSession", StringComparer.Ordinal));
+}
+
+static void TestDealerGexRequestPolicy()
+{
+    var now = new DateTime(2026, 8, 17, 13, 36, 0, DateTimeKind.Utc);
+    var first = DealerGexRequestIdentity.Create("fake-key-gex", "spx", now);
+    var sameBucket = DealerGexRequestIdentity.Create(
+        "fake-key-gex",
+        "SPX",
+        now.AddMinutes(3));
+    var differentKey = DealerGexRequestIdentity.Create(
+        "fake-key-other",
+        "SPX",
+        now);
+    Equal(first, sameBucket);
+    Assert(first != differentKey);
+    Assert(!first.CredentialFingerprint.Contains("fake-key", StringComparison.Ordinal));
+
+    var retryAt = now.AddMinutes(2);
+    NightwatchRetryGate.Register(first.CredentialFingerprint, retryAt);
+    Equal<DateTime?>(retryAt, NightwatchRetryGate.GetRetryNotBeforeUtc("fake-key-gex", now));
+    Equal<DateTime?>(null, NightwatchRetryGate.GetRetryNotBeforeUtc("fake-key-other", now));
 }
 
 static void TestEditionAssemblies()
@@ -1063,7 +1329,7 @@ static void TestEditionAssemblies()
         var standard = AssemblyLoadContext.Default.LoadFromAssemblyPath(standardPath);
         var pro = AssemblyLoadContext.Default.LoadFromAssemblyPath(proPath);
         Equal(new Version(1, 1, 0, 0), standard.GetName().Version!);
-        Equal(new Version(2, 0, 0, 0), pro.GetName().Version!);
+        Equal(new Version(2, 1, 0, 0), pro.GetName().Version!);
 
         var standardType = standard.GetType(
             "WolfMoss.ATAS.PriceMapping.FuturesReferencePriceAxisIndicator",
@@ -1121,7 +1387,7 @@ static void TestEditionAssemblies()
             .ToDictionary(static property => property.Name, StringComparer.Ordinal);
         foreach (var property in new[]
                  {
-                     "ShowDealerHeatmap", "NightwatchApiKey",
+                     "ShowDealerHeatmap", "ShowDealerGex", "NightwatchApiKey",
                      "DealerHeatmapRthRefreshMinutes",
                      "DealerHeatmapOffHoursRefreshMinutes"
                  })
@@ -1143,6 +1409,7 @@ static void TestEditionAssemblies()
         foreach (var declaration in new[]
                  {
                      "private bool _showDealerHeatmap = true;",
+                     "private bool _showDealerGex = true;",
                      "private string _nightwatchApiKey = string.Empty;",
                      "private int _dealerHeatmapRthRefreshMinutes = 5;",
                      "private int _dealerHeatmapOffHoursRefreshMinutes = 60;"
@@ -1155,6 +1422,8 @@ static void TestEditionAssemblies()
         var standardText = Encoding.UTF8.GetString(standardBytes);
         Assert(!standardText.Contains("Nightwatch", StringComparison.Ordinal));
         Assert(!standardText.Contains("DealerHeatmap", StringComparison.Ordinal));
+        Assert(!standardText.Contains("DealerGex", StringComparison.Ordinal));
+        Assert(!standardText.Contains("dealer-gex", StringComparison.Ordinal));
     }
     finally
     {

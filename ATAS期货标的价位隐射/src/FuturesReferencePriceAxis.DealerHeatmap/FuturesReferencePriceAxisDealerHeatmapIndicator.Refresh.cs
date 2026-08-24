@@ -9,6 +9,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     private CancellationTokenSource? _dealerHeatmapScheduleCancellation;
     private DealerHeatmapSnapshot _dealerHeatmapSnapshot =
         DealerHeatmapSnapshot.Disabled(DateTime.MinValue);
+    private DealerGexSnapshot _dealerGexSnapshot =
+        DealerGexSnapshot.Disabled(DateTime.MinValue);
     private long _dealerHeatmapGeneration;
 
     protected override void OnEditionInitialized()
@@ -60,18 +62,25 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             _dealerHeatmapScheduleCancellation?.Cancel();
             _dealerHeatmapScheduleCancellation?.Dispose();
             _dealerHeatmapScheduleCancellation = null;
+            var nowUtc = CurrentUtcTime();
 
             if (!_showDealerHeatmap)
-            {
-                SetDealerHeatmapSnapshot(
-                    DealerHeatmapSnapshot.Disabled(CurrentUtcTime()));
+                SetDealerHeatmapSnapshot(DealerHeatmapSnapshot.Disabled(nowUtc));
+
+            if (!_showDealerGex)
+                SetDealerGexSnapshot(DealerGexSnapshot.Disabled(nowUtc));
+
+            if (!_showDealerHeatmap && !_showDealerGex)
                 return;
-            }
 
             if (string.IsNullOrWhiteSpace(_nightwatchApiKey))
             {
-                SetDealerHeatmapSnapshot(
-                    DealerHeatmapSnapshot.MissingApiKey(CurrentUtcTime()));
+                if (_showDealerHeatmap)
+                    SetDealerHeatmapSnapshot(DealerHeatmapSnapshot.MissingApiKey(nowUtc));
+
+                if (_showDealerGex)
+                    SetDealerGexSnapshot(DealerGexSnapshot.MissingApiKey(nowUtc));
+
                 return;
             }
 
@@ -82,7 +91,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
 
         var generation = Interlocked.Read(ref _dealerHeatmapGeneration);
-        _ = RunDealerHeatmapLoopAsync(generation, cancellationToken);
+        _ = RunDealerDataLoopAsync(generation, cancellationToken);
     }
 
     private void StopDealerHeatmapSchedule()
@@ -95,7 +104,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
     }
 
-    private async Task RunDealerHeatmapLoopAsync(
+    private async Task RunDealerDataLoopAsync(
         long generation,
         CancellationToken cancellationToken)
     {
@@ -103,7 +112,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         {
             while (true)
             {
-                var retryNotBefore = await RefreshDealerHeatmapOnceAsync(
+                var retryNotBefore = await RefreshDealerDataOnceAsync(
                         generation,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -117,8 +126,19 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     _dealerHeatmapRthRefreshMinutes,
                     _dealerHeatmapOffHoursRefreshMinutes,
                     retryNotBefore);
-                var snapshot = Volatile.Read(ref _dealerHeatmapSnapshot);
-                SetDealerHeatmapSnapshot(snapshot with { NextAttemptUtc = nextUtc });
+
+                if (_showDealerHeatmap)
+                {
+                    var heatmap = Volatile.Read(ref _dealerHeatmapSnapshot);
+                    SetDealerHeatmapSnapshot(heatmap with { NextAttemptUtc = nextUtc });
+                }
+
+                if (_showDealerGex)
+                {
+                    var dealerGex = Volatile.Read(ref _dealerGexSnapshot);
+                    SetDealerGexSnapshot(dealerGex with { NextAttemptUtc = nextUtc });
+                }
+
                 var delay = nextUtc - CurrentUtcTime();
 
                 if (delay < TimeSpan.FromSeconds(1))
@@ -132,18 +152,35 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
         catch
         {
-            var existing = Volatile.Read(ref _dealerHeatmapSnapshot);
-            SetDealerHeatmapSnapshot(existing with
+            var nowUtc = CurrentUtcTime();
+
+            if (_showDealerHeatmap)
             {
-                State = DealerHeatmapState.Frozen,
-                AttemptUtc = CurrentUtcTime(),
-                Message = "Dealer Heatmap 更新循环异常",
-                IsFrozen = existing.Frame != null
-            });
+                var existing = Volatile.Read(ref _dealerHeatmapSnapshot);
+                SetDealerHeatmapSnapshot(existing with
+                {
+                    State = DealerHeatmapState.Frozen,
+                    AttemptUtc = nowUtc,
+                    Message = "Dealer Heatmap 更新循环异常",
+                    IsFrozen = existing.Frame != null
+                });
+            }
+
+            if (_showDealerGex)
+            {
+                var existing = Volatile.Read(ref _dealerGexSnapshot);
+                SetDealerGexSnapshot(existing with
+                {
+                    State = DealerGexState.Frozen,
+                    AttemptUtc = nowUtc,
+                    Message = "Dealer GEX 更新循环异常",
+                    IsFrozen = existing.Frame != null
+                });
+            }
         }
     }
 
-    private async Task<DateTime?> RefreshDealerHeatmapOnceAsync(
+    private async Task<DateTime?> RefreshDealerDataOnceAsync(
         long generation,
         CancellationToken cancellationToken)
     {
@@ -154,17 +191,53 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 InstrumentInfo?.Instrument,
                 out var pair))
         {
-            SetDealerHeatmapSnapshot(new DealerHeatmapSnapshot(
-                null,
-                null,
-                DealerHeatmapState.Waiting,
-                nowUtc,
-                null,
-                "等待可识别的 NQ/MNQ 或 ES/MES 品种",
-                false));
+            if (_showDealerHeatmap)
+            {
+                SetDealerHeatmapSnapshot(new DealerHeatmapSnapshot(
+                    null,
+                    null,
+                    DealerHeatmapState.Waiting,
+                    nowUtc,
+                    null,
+                    "等待可识别的 NQ/MNQ 或 ES/MES 品种",
+                    false));
+            }
+
+            if (_showDealerGex)
+            {
+                SetDealerGexSnapshot(new DealerGexSnapshot(
+                    null,
+                    null,
+                    DealerGexState.Waiting,
+                    nowUtc,
+                    null,
+                    "等待可识别的 NQ/MNQ 或 ES/MES 品种",
+                    false));
+            }
+
             return null;
         }
 
+        var heatmapTask = _showDealerHeatmap
+            ? RefreshDealerHeatmapOnceAsync(pair, generation, cancellationToken)
+            : Task.FromResult<DateTime?>(null);
+        var dealerGexTask = _showDealerGex
+            ? RefreshDealerGexOnceAsync(pair, generation, cancellationToken)
+            : Task.FromResult<DateTime?>(null);
+        await Task.WhenAll(heatmapTask, dealerGexTask).ConfigureAwait(false);
+        var retryDates = new[] { heatmapTask.Result, dealerGexTask.Result }
+            .Where(static value => value.HasValue)
+            .Select(static value => value!.Value)
+            .ToArray();
+        return retryDates.Length == 0 ? null : retryDates.Max();
+    }
+
+    private async Task<DateTime?> RefreshDealerHeatmapOnceAsync(
+        InstrumentPair pair,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        var nowUtc = CurrentUtcTime();
         var target = NyseTradingCalendar.ResolveTarget(nowUtc, pair.ReferenceSymbol);
         var previous = Volatile.Read(ref _dealerHeatmapSnapshot);
         var reusableFrame = IsFrameForTarget(previous.Frame, target)
@@ -192,8 +265,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             if (!IsCurrentDealerHeatmapGeneration(generation, cancellationToken))
                 return null;
 
-            var isLive = IsLiveFrame(target, frame);
-            var state = isLive
+            var state = IsLiveFrame(target, frame)
                 ? DealerHeatmapState.Live
                 : DealerHeatmapState.NextSession;
             var message = previous.Frame?.MinuteAtUtc == frame.MinuteAtUtc
@@ -251,6 +323,98 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
     }
 
+    private async Task<DateTime?> RefreshDealerGexOnceAsync(
+        InstrumentPair pair,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        var nowUtc = CurrentUtcTime();
+        var ticker = pair.ReferenceSymbol.ToUpperInvariant();
+        var previous = Volatile.Read(ref _dealerGexSnapshot);
+        var reusableFrame = IsDealerGexFrameForTicker(previous.Frame, ticker)
+            ? previous.Frame
+            : null;
+        SetDealerGexSnapshot(new DealerGexSnapshot(
+            ticker,
+            reusableFrame,
+            DealerGexState.Fetching,
+            nowUtc,
+            null,
+            "正在获取 Dealer GEX",
+            reusableFrame != null && previous.IsFrozen));
+
+        try
+        {
+            var frame = await NightwatchDealerGexClient.GetLatestAsync(
+                    _nightwatchApiKey,
+                    ticker,
+                    nowUtc,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!IsCurrentDealerHeatmapGeneration(generation, cancellationToken))
+                return null;
+
+            var state = DealerGexSessionPolicy.ResolveState(CurrentUtcTime(), frame);
+            var message = previous.Frame?.SnapshotAtUtc == frame.SnapshotAtUtc
+                ? $"数据未推进，沿用 {frame.Nodes.Count} 个关键价位"
+                : $"已更新 {frame.Nodes.Count} 个关键价位";
+
+            if (state == DealerGexState.Frozen)
+                message += $"；API state: {frame.ApiState}";
+
+            SetDealerGexSnapshot(new DealerGexSnapshot(
+                ticker,
+                frame,
+                state,
+                CurrentUtcTime(),
+                null,
+                message,
+                state == DealerGexState.Frozen));
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (DealerGexDataException exception)
+        {
+            if (!IsCurrentDealerHeatmapGeneration(generation, cancellationToken))
+                return exception.RetryAfterUtc;
+
+            var state = exception.Code switch
+            {
+                "HTTP401" or "HTTP403" => DealerGexState.AuthenticationFailed,
+                "HTTP429" => DealerGexState.RateLimited,
+                _ when reusableFrame != null => DealerGexState.Frozen,
+                _ => DealerGexState.Waiting
+            };
+            SetDealerGexSnapshot(new DealerGexSnapshot(
+                ticker,
+                reusableFrame,
+                state,
+                CurrentUtcTime(),
+                exception.RetryAfterUtc,
+                exception.Message,
+                reusableFrame != null));
+            return exception.RetryAfterUtc;
+        }
+        catch
+        {
+            SetDealerGexSnapshot(new DealerGexSnapshot(
+                ticker,
+                reusableFrame,
+                reusableFrame != null
+                    ? DealerGexState.Frozen
+                    : DealerGexState.Waiting,
+                CurrentUtcTime(),
+                null,
+                "Dealer GEX 内部错误",
+                reusableFrame != null));
+            return null;
+        }
+    }
+
     private bool IsCurrentDealerHeatmapGeneration(
         long generation,
         CancellationToken cancellationToken)
@@ -265,6 +429,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         => frame != null
            && string.Equals(frame.Ticker, target.Ticker, StringComparison.OrdinalIgnoreCase)
            && frame.Expiration == target.TargetExpiration;
+
+    private static bool IsDealerGexFrameForTicker(
+        DealerGexFrame? frame,
+        string ticker)
+        => frame != null
+           && string.Equals(frame.Ticker, ticker, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLiveFrame(
         DealerHeatmapTarget target,
@@ -282,6 +452,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     private void SetDealerHeatmapSnapshot(DealerHeatmapSnapshot snapshot)
     {
         Volatile.Write(ref _dealerHeatmapSnapshot, snapshot);
+        RequestRedraw();
+    }
+
+    private void SetDealerGexSnapshot(DealerGexSnapshot snapshot)
+    {
+        Volatile.Write(ref _dealerGexSnapshot, snapshot);
         RequestRedraw();
     }
 }

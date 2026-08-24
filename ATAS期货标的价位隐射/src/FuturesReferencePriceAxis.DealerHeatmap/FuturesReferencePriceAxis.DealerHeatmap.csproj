@@ -8,11 +8,11 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>WolfMoss.ATAS.PriceMapping</RootNamespace>
     <AssemblyName>FuturesReferencePriceAxis.DealerHeatmap</AssemblyName>
-    <Version>2.0.0</Version>
-    <AssemblyVersion>2.0.0.0</AssemblyVersion>
-    <FileVersion>2.0.0.0</FileVersion>
+    <Version>2.1.0</Version>
+    <AssemblyVersion>2.1.0.0</AssemblyVersion>
+    <FileVersion>2.1.0.0</FileVersion>
     <Authors>WolfMoss</Authors>
-    <Description>ATAS reference price axis Pro with Nightwatch Dealer Heatmap.</Description>
+    <Description>ATAS reference price axis Pro with Nightwatch Dealer Heatmap and Dealer GEX.</Description>
     <ATASInstallDir Condition="'$(ATASInstallDir)' == ''">C:\Program Files (x86)\ATAS Platform</ATASInstallDir>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>

@@ -74,6 +74,9 @@ public abstract partial class FuturesReferencePriceAxisIndicatorBase
     protected virtual int GetEditionReservedWidth(int actualAxisWidth)
         => 0;
 
+    protected virtual int GetActualAxisWidth(int configuredAxisWidth, Rectangle region)
+        => Math.Min(configuredAxisWidth, Math.Max(45, region.Width / 3));
+
     protected virtual IReadOnlyList<string> GetEditionStatusLines()
         => Array.Empty<string>();
 
@@ -91,7 +94,11 @@ public abstract partial class FuturesReferencePriceAxisIndicatorBase
         if (region.Height <= 0 || region.Width <= 0 || ratio <= 0m)
             return null;
 
-        var width = Math.Min(_axisWidth, Math.Max(45, region.Width / 3));
+        var width = GetActualAxisWidth(_axisWidth, region);
+
+        if (width <= 0)
+            return null;
+
         var axisRect = new Rectangle(region.X, region.Y, width, region.Height);
         context.FillRectangle(_axisBackgroundColor, axisRect);
         context.FillRectangle(
@@ -257,7 +264,7 @@ public abstract partial class FuturesReferencePriceAxisIndicatorBase
         decimal? effectiveRatio)
     {
         var region = ChartInfo!.PriceChartContainer.Region;
-        var actualAxisWidth = Math.Min(_axisWidth, Math.Max(45, region.Width / 3));
+        var actualAxisWidth = GetActualAxisWidth(_axisWidth, region);
         var editionWidth = GetEditionReservedWidth(actualAxisWidth);
         var reservedWidth = actualAxisWidth + editionWidth;
         var availableWidth = region.Width - reservedWidth - 16;

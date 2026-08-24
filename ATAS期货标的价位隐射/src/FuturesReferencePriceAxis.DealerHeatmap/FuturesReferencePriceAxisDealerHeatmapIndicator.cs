@@ -9,7 +9,7 @@ using OFT.Localization;
 
 [DisplayName("Futures Reference Price Axis Pro / 期货现货映射轴 Pro（Dealer Heatmap）")]
 [Category(IndicatorCategories.Other)]
-[Description("NQ/MNQ→QQQ and ES/MES→SPX reference axis with Nightwatch Dealer Heatmap.")]
+[Description("NQ/MNQ→QQQ and ES/MES→SPX reference axis with Nightwatch Dealer Heatmap and Dealer GEX.")]
 [HelpLink("https://docs.yehangshe.com/api/introduction")]
 public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     : FuturesReferencePriceAxisIndicatorBase

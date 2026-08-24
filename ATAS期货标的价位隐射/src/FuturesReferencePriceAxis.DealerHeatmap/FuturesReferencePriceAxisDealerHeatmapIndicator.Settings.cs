@@ -8,6 +8,7 @@ using WolfMoss.ATAS.PriceMapping.Core;
 public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 {
     private bool _showDealerHeatmap = true;
+    private bool _showDealerGex = true;
     private string _nightwatchApiKey = string.Empty;
     private int _dealerHeatmapRthRefreshMinutes = 5;
     private int _dealerHeatmapOffHoursRefreshMinutes = 60;
@@ -25,6 +26,23 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 return;
 
             _showDealerHeatmap = value;
+            ReconfigureDealerHeatmap();
+        }
+    }
+
+    [Display(
+        Name = "Show Dealer GEX / 显示 Dealer GEX",
+        GroupName = "Dealer GEX / Dealer GEX",
+        Order = 205)]
+    public bool ShowDealerGex
+    {
+        get => _showDealerGex;
+        set
+        {
+            if (_showDealerGex == value)
+                return;
+
+            _showDealerGex = value;
             ReconfigureDealerHeatmap();
         }
     }
@@ -53,6 +71,14 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     null,
                     null,
                     DealerHeatmapState.Waiting,
+                    CurrentUtcTime(),
+                    null,
+                    "API key 已更新，等待重新连接",
+                    false));
+                SetDealerGexSnapshot(new DealerGexSnapshot(
+                    null,
+                    null,
+                    DealerGexState.Waiting,
                     CurrentUtcTime(),
                     null,
                     "API key 已更新，等待重新连接",

@@ -8,35 +8,32 @@ using System.Net.Http.Headers;
 
 using WolfMoss.ATAS.PriceMapping.Core;
 
-internal static class NightwatchDealerHeatmapClient
+internal static class NightwatchDealerGexClient
 {
-    private const int MaximumResponseBytes = 524_288;
+    private const int MaximumResponseBytes = 262_144;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
     private static readonly HttpClient Client = CreateClient();
     private static readonly ReferenceQuoteCoordinator<
-        DealerHeatmapRequestIdentity,
-        DealerHeatmapFrame> Coordinator = new(
+        DealerGexRequestIdentity,
+        DealerGexFrame> Coordinator = new(
         TimeSpan.FromMinutes(10),
         TimeSpan.FromSeconds(5));
-    public static Task<DealerHeatmapFrame> GetLatestAsync(
+
+    public static Task<DealerGexFrame> GetLatestAsync(
         string apiKey,
         string ticker,
-        DateOnly expiration,
         DateTime utcNow,
         CancellationToken cancellationToken)
     {
-        var identity = DealerHeatmapRequestIdentity.Create(
+        var identity = DealerGexRequestIdentity.Create(
             apiKey,
             ticker,
-            expiration,
             utcNow);
-        var fingerprint = identity.CredentialFingerprint;
-
         var retryAt = NightwatchRetryGate.GetRetryNotBeforeUtc(apiKey, utcNow);
 
         if (retryAt.HasValue)
         {
-            throw new DealerHeatmapDataException(
+            throw new DealerGexDataException(
                 "HTTP429",
                 "Nightwatch 限流，等待 Retry-After",
                 retryAt.Value);
@@ -44,19 +41,22 @@ internal static class NightwatchDealerHeatmapClient
 
         return Coordinator.GetAsync(
             identity,
-            token => DownloadAsync(apiKey, ticker, expiration, fingerprint, token),
+            token => DownloadAsync(
+                apiKey,
+                ticker,
+                identity.CredentialFingerprint,
+                token),
             cancellationToken);
     }
 
-    private static async Task<DealerHeatmapFrame> DownloadAsync(
+    private static async Task<DealerGexFrame> DownloadAsync(
         string apiKey,
         string ticker,
-        DateOnly expiration,
-        string fingerprint,
+        string credentialFingerprint,
         CancellationToken cancellationToken)
     {
         var symbol = ticker.ToUpperInvariant();
-        var url = "https://api.yehangshe.com/v1/derived/heatmap/"
+        var url = "https://api.yehangshe.com/v1/derived/dealer-gex/"
                   + Uri.EscapeDataString(symbol)
                   + "/snapshot";
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -78,8 +78,8 @@ internal static class NightwatchDealerHeatmapClient
                     DateTime.UtcNow,
                     response.Headers.RetryAfter?.Delta,
                     response.Headers.RetryAfter?.Date);
-                NightwatchRetryGate.Register(fingerprint, retryAt);
-                throw new DealerHeatmapDataException(
+                NightwatchRetryGate.Register(credentialFingerprint, retryAt);
+                throw new DealerGexDataException(
                     "HTTP429",
                     "Nightwatch 429 限流",
                     retryAt);
@@ -87,48 +87,48 @@ internal static class NightwatchDealerHeatmapClient
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
-                throw new DealerHeatmapDataException(
+                throw new DealerGexDataException(
                     $"HTTP{(int)response.StatusCode}",
                     "Nightwatch API key 鉴权失败");
             }
 
             if (!response.IsSuccessStatusCode)
             {
-                throw new DealerHeatmapDataException(
+                throw new DealerGexDataException(
                     $"HTTP{(int)response.StatusCode}",
                     $"Nightwatch HTTP {(int)response.StatusCode}");
             }
 
             if (response.Content.Headers.ContentLength > MaximumResponseBytes)
             {
-                throw new DealerHeatmapDataException(
+                throw new DealerGexDataException(
                     "ResponseTooLarge",
-                    "Nightwatch 响应过大");
+                    "Nightwatch Dealer GEX 响应过大");
             }
 
             var json = await ReadBoundedAsync(response, timeout.Token).ConfigureAwait(false);
-            return DealerHeatmapParser.ParseSnapshot(json.Span, symbol, expiration);
+            return DealerGexParser.ParseSnapshot(json.Span, symbol);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (DealerHeatmapDataException)
+        catch (DealerGexDataException)
         {
             throw;
         }
         catch (OperationCanceledException exception)
         {
-            throw new DealerHeatmapDataException(
+            throw new DealerGexDataException(
                 "Timeout",
-                "Nightwatch 请求超时",
+                "Nightwatch Dealer GEX 请求超时",
                 innerException: exception);
         }
         catch (HttpRequestException exception)
         {
-            throw new DealerHeatmapDataException(
+            throw new DealerGexDataException(
                 "NetworkError",
-                "Nightwatch 网络错误",
+                "Nightwatch Dealer GEX 网络错误",
                 innerException: exception);
         }
     }
@@ -156,9 +156,9 @@ internal static class NightwatchDealerHeatmapClient
 
                 if (output.Length + read > MaximumResponseBytes)
                 {
-                    throw new DealerHeatmapDataException(
+                    throw new DealerGexDataException(
                         "ResponseTooLarge",
-                        "Nightwatch 响应过大");
+                        "Nightwatch Dealer GEX 响应过大");
                 }
 
                 output.Write(buffer, 0, read);
@@ -183,5 +183,4 @@ internal static class NightwatchDealerHeatmapClient
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
-
 }

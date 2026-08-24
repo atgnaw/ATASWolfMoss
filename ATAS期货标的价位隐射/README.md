@@ -17,7 +17,7 @@
 项目可同时生成两个版本：
 
 - 普通版 `FuturesReferencePriceAxis` v1.1.0：保持原有映射功能和指标类型不变。
-- Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.0.0：在映射轴右侧增加同宽的 Nightwatch Dealer Heatmap。
+- Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.1.0：在映射轴右侧依次增加同宽的 Nightwatch Dealer Heatmap 和 Dealer GEX。
 
 ## 编译
 
@@ -92,7 +92,7 @@ v1.1.0 会让同一进程中的多个图表共享同一标的和同一分钟选�
 每个指标实例按自己的设置独立执行。主源和备用源均失败时，状态行会同时
 保留两边的简短诊断。
 
-## Pro Dealer Heatmap
+## Pro Dealer Heatmap 与 Dealer GEX
 
 Pro 版使用 Nightwatch REST 接口读取指定到期日的最新 Dealer Heatmap 5 分钟桶：
 
@@ -104,17 +104,30 @@ Pro 版使用 Nightwatch REST 接口读取指定到期日的最新 Dealer Heatma
   并在下一 RTH 开始时主动唤醒。
 - 只绘制 API 返回的稀疏节点。QQQ 每格固定为 1 美元执行价，SPX 每格固定为
   5 美元；缺失节点不会补零、插值或用旧节点填充。
+- API 时间字段表示五分钟桶起点；界面中的“数据时间”、数据列顶部和悬停提示
+  显示该桶实际读取的最后一分钟，即桶起点加 4 分钟。例如 `09:30` 桶显示为
+  `09:34`，原始桶时间仍用于缓存、去重和调度。
 - 相同 API key、ticker、expiration 和 5 分钟桶的 Pro 实例共享同一请求。
   `429` 严格服从 `Retry-After`；网络、服务或解析失败时只冻结同 ticker、
   同 expiration 的最后有效帧。
 
+Pro 版还会从 `/v1/derived/dealer-gex/{ticker}/snapshot` 读取最新完成的 0DTE
+Dealer GEX 五个关键价位。最终列顺序为“映射轴 → Dealer Heatmap → Dealer GEX”；
+关闭 Heatmap 后 Dealer GEX 会直接紧贴映射轴。两项功能均可独立开关，并复用相同
+API key、5/60 分钟刷新设置、映射比例和列宽。
+
+Dealer GEX 的五个价位按绝对 GEX 最大值归一化为从左向右的进度条：负值红色、
+正值绿色、King 节点白色，条内只显示执行价。Gamma Flip 使用黄色虚线，Call Wall
+使用绿色实线，Put Wall 使用红色实线。闭市后保留最后有效桶并显示 `CLOSED`；请求
+失败而沿用旧数据时显示 `FROZEN`，Dealer GEX 不使用 `NEXT SESSION` 状态。
+
 Pro 设置组中需要填写 `Nightwatch API key`。该属性在 ATAS 设置面板中以密码
 样式遮盖，但 ATAS 仍可能把它明文保存在本地模板或配置中。密钥不会写入代码、
-请求 URL、状态文字或异常诊断。未配置密钥时 Dealer Heatmap 不发出网络请求，
+请求 URL、状态文字或异常诊断。未配置密钥时 Dealer Heatmap 和 Dealer GEX 均不发出网络请求，
 原有映射功能仍可正常使用。
 
-热力图头部和状态面板会同时标明目标 expiration、数据 as-of 时间及
-`LIVE`、`NEXT SESSION`、`FROZEN`、`AUTH FAILED` 或 `RATE LIMITED` 状态，
+两个数据列的头部只显示数据时间；状态面板会标明目标、数据 as-of 时间及
+`LIVE`、`NEXT SESSION`、`CLOSED`、`FROZEN`、`AUTH FAILED` 或 `RATE LIMITED` 状态，
 避免把休盘期间针对下一到期日的旧观测误标为实时 0DTE。
 
 ## 数据与限制
