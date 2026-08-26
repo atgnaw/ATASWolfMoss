@@ -79,6 +79,7 @@ var tests = new (string Name, Action Run)[]
     ("Dealer GEX parser rejection rules", TestDealerGexParserRejections),
     ("Dealer GEX presentation and structure labels", TestDealerGexPresentation),
     ("Dealer data column layout combinations", TestDealerColumnsLayout),
+    ("Dealer render metrics cache", TestDealerRenderMetricsCache),
     ("Dealer GEX session states", TestDealerGexSessionStates),
     ("Dealer GEX request identity and shared Retry-After", TestDealerGexRequestPolicy),
     ("Standard and Pro assembly compatibility", TestEditionAssemblies)
@@ -1203,28 +1204,87 @@ static void TestDealerGexPresentation()
 
 static void TestDealerColumnsLayout()
 {
-    var both = DealerColumnsLayout.Calculate(72, 72, true, true);
-    Equal(72, both.HeatmapLeft);
-    Equal(144, both.DealerGexLeft);
-    Equal(2, both.DataColumnCount);
-    Equal(144, both.ReservedEditionWidth);
+    var bothVisibility = DealerColumnPlanner.FromToggles(true, true);
+    var both = DealerColumnPlanner.Create(72, 72, bothVisibility);
+    Assert(both.TryGetLeft(DealerColumnKind.Heatmap, out var heatmapLeft), "Heatmap column missing.");
+    Assert(both.TryGetLeft(DealerColumnKind.DealerGex, out var dealerGexLeft), "Dealer GEX column missing.");
+    Equal(72, heatmapLeft);
+    Equal(144, dealerGexLeft);
+    Equal(2, both.ColumnCount);
+    Equal(144, both.ReservedWidth);
 
-    var heatmapOnly = DealerColumnsLayout.Calculate(72, 72, true, false);
-    Equal(72, heatmapOnly.HeatmapLeft);
-    Equal(-1, heatmapOnly.DealerGexLeft);
-    Equal(1, heatmapOnly.DataColumnCount);
+    var heatmapOnly = DealerColumnPlanner.Create(
+        72,
+        72,
+        DealerColumnPlanner.FromToggles(true, false));
+    Assert(heatmapOnly.TryGetLeft(DealerColumnKind.Heatmap, out heatmapLeft), "Heatmap-only column missing.");
+    Assert(!heatmapOnly.TryGetLeft(DealerColumnKind.DealerGex, out _), "Unexpected Dealer GEX column.");
+    Equal(72, heatmapLeft);
+    Equal(1, heatmapOnly.ColumnCount);
 
-    var gexOnly = DealerColumnsLayout.Calculate(72, 72, false, true);
-    Equal(-1, gexOnly.HeatmapLeft);
-    Equal(72, gexOnly.DealerGexLeft);
-    Equal(1, gexOnly.DataColumnCount);
+    var gexOnly = DealerColumnPlanner.Create(
+        72,
+        72,
+        DealerColumnPlanner.FromToggles(false, true));
+    Assert(!gexOnly.TryGetLeft(DealerColumnKind.Heatmap, out _), "Unexpected Heatmap column.");
+    Assert(gexOnly.TryGetLeft(DealerColumnKind.DealerGex, out dealerGexLeft), "GEX-only column missing.");
+    Equal(72, dealerGexLeft);
+    Equal(1, gexOnly.ColumnCount);
 
-    var neither = DealerColumnsLayout.Calculate(72, 72, false, false);
-    Equal(0, neither.DataColumnCount);
-    Equal(0, neither.ReservedEditionWidth);
-    Equal(60, DealerColumnsLayout.CalculateColumnWidth(72, 300, true, true));
-    Equal(72, DealerColumnsLayout.CalculateColumnWidth(72, 300, true, false));
-    Equal(20, DealerColumnsLayout.CalculateColumnWidth(72, 100, true, true));
+    var neither = DealerColumnPlanner.Create(72, 72, DealerColumnVisibility.None);
+    Equal(0, neither.ColumnCount);
+    Equal(0, neither.ReservedWidth);
+    Equal(60, DealerColumnPlanner.CalculateColumnWidth(72, 300, bothVisibility));
+    Equal(72, DealerColumnPlanner.CalculateColumnWidth(
+        72,
+        300,
+        DealerColumnVisibility.Heatmap));
+    Equal(20, DealerColumnPlanner.CalculateColumnWidth(72, 100, bothVisibility));
+}
+
+static void TestDealerRenderMetricsCache()
+{
+    var cache = new DealerRenderMetricsCache();
+    var heatmap = new DealerHeatmapFrame(
+        "QQQ",
+        new DateOnly(2026, 8, 25),
+        new DateTime(2026, 8, 25, 14, 30, 0, DateTimeKind.Utc),
+        570m,
+        [
+            new DealerHeatmapCell(569m, -4m),
+            new DealerHeatmapCell(570m, 6m)
+        ]);
+
+    Equal(new DealerHeatmapValueRange(-4m, 6m), cache.GetHeatmapRange(heatmap));
+    Equal(new DealerHeatmapValueRange(-4m, 6m), cache.GetHeatmapRange(heatmap));
+    Equal(1, cache.HeatmapCalculationCount);
+
+    var positiveHeatmap = heatmap with
+    {
+        Cells = [new DealerHeatmapCell(571m, 9m)]
+    };
+    Equal(new DealerHeatmapValueRange(0m, 9m), cache.GetHeatmapRange(positiveHeatmap));
+    Equal(2, cache.HeatmapCalculationCount);
+
+    var dealerGex = new DealerGexFrame(
+        "QQQ",
+        new DateTime(2026, 8, 25, 14, 30, 0, DateTimeKind.Utc),
+        new DateOnly(2026, 8, 25),
+        "live",
+        570m,
+        [
+            new DealerGexNode(569m, -12m, "standard", 1, 1m),
+            new DealerGexNode(570m, 7m, "king", 2, 0.5m)
+        ],
+        new DealerGexSummary(null, null, null, null, null, null, null));
+
+    Equal(12m, cache.GetDealerGexMaximumAbsolute(dealerGex));
+    Equal(12m, cache.GetDealerGexMaximumAbsolute(dealerGex));
+    Equal(1, cache.DealerGexCalculationCount);
+
+    var emptyDealerGex = dealerGex with { Nodes = [] };
+    Equal(0m, cache.GetDealerGexMaximumAbsolute(emptyDealerGex));
+    Equal(2, cache.DealerGexCalculationCount);
 }
 
 static void TestDealerGexSessionStates()

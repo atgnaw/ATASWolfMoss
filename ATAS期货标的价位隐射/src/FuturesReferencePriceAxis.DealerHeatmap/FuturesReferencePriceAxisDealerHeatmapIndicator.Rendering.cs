@@ -29,26 +29,41 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         DrawingColor.FromArgb(255, 248, 81, 73);
 
     protected override int GetActualAxisWidth(int configuredAxisWidth, Rectangle region)
-        => DealerColumnsLayout.CalculateColumnWidth(
+        => DealerColumnPlanner.CalculateColumnWidth(
             configuredAxisWidth,
             region.Width,
-            _showDealerHeatmap,
-            _showDealerGex);
+            VisibleDealerColumns);
 
     protected override int GetEditionReservedWidth(int actualAxisWidth)
-        => actualAxisWidth
-           * ((_showDealerHeatmap ? 1 : 0) + (_showDealerGex ? 1 : 0));
+        => actualAxisWidth * DealerColumnPlanner.Count(VisibleDealerColumns);
 
     protected override int GetStatusPanelMaximumWidth()
         => 480;
 
     protected override IReadOnlyList<string> GetEditionStatusLines()
     {
-        var lines = new List<string>();
+        var visibility = VisibleDealerColumns;
+        var heatmapSnapshot = (visibility & DealerColumnVisibility.Heatmap) != 0
+            ? Volatile.Read(ref _dealerHeatmapSnapshot)
+            : null;
+        var dealerGexSnapshot = (visibility & DealerColumnVisibility.DealerGex) != 0
+            ? Volatile.Read(ref _dealerGexSnapshot)
+            : null;
 
-        if (_showDealerHeatmap)
+        if (TryGetCachedEditionStatusLines(
+                visibility,
+                heatmapSnapshot,
+                dealerGexSnapshot,
+                out var cachedLines))
         {
-            var snapshot = Volatile.Read(ref _dealerHeatmapSnapshot);
+            return cachedLines;
+        }
+
+        var lines = new List<string>(8);
+
+        if (heatmapSnapshot is { } heatmapValue)
+        {
+            var snapshot = heatmapValue;
             var target = snapshot.Target is { } value
                 ? $"{value.Ticker} {value.TargetExpiration:yyyy-MM-dd}"
                 : "--";
@@ -66,9 +81,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             lines.Add($"Heatmap 信息: {snapshot.Message}");
         }
 
-        if (_showDealerGex)
+        if (dealerGexSnapshot is { } dealerGexValue)
         {
-            var snapshot = Volatile.Read(ref _dealerGexSnapshot);
+            var snapshot = dealerGexValue;
             var asOf = snapshot.Frame == null
                 ? "--"
                 : FormatUiTime(
@@ -83,7 +98,11 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             lines.Add($"Dealer GEX 信息: {snapshot.Message}");
         }
 
-        return lines;
+        return CacheEditionStatusLines(
+            visibility,
+            heatmapSnapshot,
+            dealerGexSnapshot,
+            lines);
     }
 
     protected override void DrawEditionOverlay(
@@ -95,25 +114,24 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         if (effectiveRatio is not > 0m || axisRect == null)
             return;
 
-        var columns = DealerColumnsLayout.Calculate(
+        var columns = DealerColumnPlanner.Create(
             axisRect.Value.Right,
             axisRect.Value.Width,
-            _showDealerHeatmap,
-            _showDealerGex);
+            VisibleDealerColumns);
 
-        if (_showDealerHeatmap)
+        if (columns.TryGetLeft(DealerColumnKind.Heatmap, out var heatmapLeft))
         {
             DrawHeatmapColumn(
                 context,
-                GetColumnRectangle(axisRect.Value, columns.HeatmapLeft),
+                GetColumnRectangle(axisRect.Value, heatmapLeft),
                 effectiveRatio.Value);
         }
 
-        if (_showDealerGex)
+        if (columns.TryGetLeft(DealerColumnKind.DealerGex, out var dealerGexLeft))
         {
             DrawDealerGexColumn(
                 context,
-                GetColumnRectangle(axisRect.Value, columns.DealerGexLeft),
+                GetColumnRectangle(axisRect.Value, dealerGexLeft),
                 effectiveRatio.Value);
         }
     }
@@ -127,35 +145,34 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         if (effectiveRatio is not > 0m || axisRect == null)
             return;
 
-        var columns = DealerColumnsLayout.Calculate(
+        var columns = DealerColumnPlanner.Create(
             axisRect.Value.Right,
             axisRect.Value.Width,
-            _showDealerHeatmap,
-            _showDealerGex);
+            VisibleDealerColumns);
 
-        if (columns.DataColumnCount == 0)
+        if (columns.ColumnCount == 0)
             return;
 
         var dataRect = new Rectangle(
             axisRect.Value.Right,
             axisRect.Value.Top,
-            axisRect.Value.Width * columns.DataColumnCount,
+            axisRect.Value.Width * columns.ColumnCount,
             axisRect.Value.Height);
         DrawMappedPriceLines(context, dataRect);
 
-        if (_showDealerHeatmap)
+        if (columns.TryGetLeft(DealerColumnKind.Heatmap, out var heatmapLeft))
         {
             DrawHeatmapTooltip(
                 context,
-                GetColumnRectangle(axisRect.Value, columns.HeatmapLeft),
+                GetColumnRectangle(axisRect.Value, heatmapLeft),
                 effectiveRatio.Value);
         }
 
-        if (_showDealerGex)
+        if (columns.TryGetLeft(DealerColumnKind.DealerGex, out var dealerGexLeft))
         {
             DrawDealerGexTooltip(
                 context,
-                GetColumnRectangle(axisRect.Value, columns.DealerGexLeft),
+                GetColumnRectangle(axisRect.Value, dealerGexLeft),
                 effectiveRatio.Value);
         }
     }
@@ -183,8 +200,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
         }
 
-        var minimum = Math.Min(0m, frame.Cells.Min(static cell => cell.NetDealerGexUsd));
-        var maximum = Math.Max(0m, frame.Cells.Max(static cell => cell.NetDealerGexUsd));
+        var valueRange = _dealerRenderMetricsCache.GetHeatmapRange(frame);
 
         foreach (var cell in frame.Cells)
         {
@@ -199,8 +215,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
             var rgb = DealerHeatmapPresentation.GetColor(
                 cell.NetDealerGexUsd,
-                minimum,
-                maximum);
+                valueRange.Minimum,
+                valueRange.Maximum);
             var background = DrawingColor.FromArgb(248, rgb.Red, rgb.Green, rgb.Blue);
             context.FillRectangle(background, cellRect.Value);
 
@@ -239,9 +255,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
         }
 
-        var maximumAbsolute = frame.Nodes.Count == 0
-            ? 0m
-            : frame.Nodes.Max(static node => Math.Abs(node.NetGexUsd));
+        var maximumAbsolute = _dealerRenderMetricsCache.GetDealerGexMaximumAbsolute(frame);
 
         foreach (var node in frame.Nodes)
         {
