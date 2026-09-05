@@ -8,12 +8,21 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>WolfMoss.ATAS.PriceMapping</RootNamespace>
     <AssemblyName>FuturesReferencePriceAxis.DealerHeatmap</AssemblyName>
-    <Version>2.1.0</Version>
-    <AssemblyVersion>2.1.0.0</AssemblyVersion>
-    <FileVersion>2.1.0.0</FileVersion>
+    <Version>2.2.0</Version>
+    <AssemblyVersion>2.2.0.0</AssemblyVersion>
+    <FileVersion>2.2.0.0</FileVersion>
     <Authors>WolfMoss</Authors>
-    <Description>ATAS reference price axis Pro with Nightwatch Dealer Heatmap and Dealer GEX.</Description>
+    <Description>ATAS reference price axis Pro with Nightwatch dealer data and IBKR 0DTE option columns.</Description>
     <ATASInstallDir Condition="'$(ATASInstallDir)' == ''">C:\Program Files (x86)\ATAS Platform</ATASInstallDir>
+    <IBApiSourceDir Condition="'$(IBApiSourceDir)' == ''">C:\TWS API\source\CSharpClient\client</IBApiSourceDir>
+    <IBApiAssemblyPath>$(IBApiSourceDir)\bin\Release\net8.0\CSharpAPI.dll</IBApiAssemblyPath>
+    <IBApiSourceAvailable Condition="Exists('$(IBApiSourceDir)\EClientSocket.cs')
+                                    and Exists('$(IBApiSourceDir)\EWrapper.cs')
+                                    and Exists('$(IBApiSourceDir)\Contract.cs')
+                                    and Exists('$(IBApiAssemblyPath)')">true</IBApiSourceAvailable>
+    <IBApiSourceAvailable Condition="'$(IBApiSourceAvailable)' == ''">false</IBApiSourceAvailable>
+    <RequireIbApiSource Condition="'$(RequireIbApiSource)' == '' and '$(Configuration)' == 'Release'">true</RequireIbApiSource>
+    <RequireIbApiSource Condition="'$(RequireIbApiSource)' == ''">false</RequireIbApiSource>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
@@ -23,6 +32,24 @@
              Exclude="..\FuturesReferencePriceAxis\bin\**;..\FuturesReferencePriceAxis\obj\**;..\FuturesReferencePriceAxis\FuturesReferencePriceAxisIndicator.Entry.cs"
              Link="Shared\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="**\*.cs" Exclude="bin\**;obj\**" />
+    <EmbeddedResource Include="$(IBApiAssemblyPath)"
+                      Condition="'$(IBApiSourceAvailable)' == 'true'"
+                      LogicalName="EmbeddedDependencies.CSharpAPI.dll" />
+    <EmbeddedResource Include="$(PkgGoogle_Protobuf)\lib\net5.0\Google.Protobuf.dll"
+                      Condition="'$(IBApiSourceAvailable)' == 'true'"
+                      LogicalName="EmbeddedDependencies.Google.Protobuf.dll" />
+    <EmbeddedResource Include="THIRD-PARTY-NOTICES-IBKR.txt"
+                      LogicalName="ThirdPartyNotices.IBKR.txt" />
+    <EmbeddedResource Include="THIRD-PARTY-NOTICES-GOOGLE-PROTOBUF.txt"
+                      LogicalName="ThirdPartyNotices.GoogleProtobuf.txt" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IBApiSourceAvailable)' == 'true'">
+    <PackageReference Include="Google.Protobuf"
+                      Version="3.29.5"
+                      GeneratePathProperty="true"
+                      PrivateAssets="all"
+                      ExcludeAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
@@ -51,5 +78,11 @@
       <Private>false</Private>
     </Reference>
   </ItemGroup>
+
+  <Target Name="ValidateIbApiSource"
+          BeforeTargets="CoreCompile"
+          Condition="'$(RequireIbApiSource)' == 'true' and '$(IBApiSourceAvailable)' != 'true'">
+    <Error Text="Pro 2.2.0 Release requires the official IB TWS API 10.45 C# source and its net8.0 CSharpAPI.dll. Install it under C:\TWS API or pass -p:IBApiSourceDir=... ." />
+  </Target>
 
 </Project>

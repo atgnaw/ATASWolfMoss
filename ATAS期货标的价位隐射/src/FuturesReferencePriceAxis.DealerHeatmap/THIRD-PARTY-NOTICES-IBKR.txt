@@ -1,0 +1,8 @@
+Interactive Brokers TWS API
+
+The Pro assembly can be built with the official Interactive Brokers TWS API
+C# client source. The source is obtained separately by the user under the
+Interactive Brokers API license and is not stored in this repository.
+
+Official download and license:
+https://interactivebrokers.github.io/

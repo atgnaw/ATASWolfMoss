@@ -17,7 +17,7 @@
 项目可同时生成两个版本：
 
 - 普通版 `FuturesReferencePriceAxis` v1.1.0：保持原有映射功能和指标类型不变。
-- Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.1.0：在映射轴右侧依次增加同宽的 Nightwatch Dealer Heatmap 和 Dealer GEX。
+- Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.2.0：在映射轴右侧依次增加同宽的 Nightwatch Dealer Heatmap、Dealer GEX、IBKR Option OI 和 Option Premium/Volume。
 
 ## 编译
 
@@ -35,6 +35,28 @@ dotnet build .\FuturesReferencePriceAxis.sln -c Release
 ```powershell
 dotnet build .\FuturesReferencePriceAxis.sln -c Release `
   -p:ATASInstallDir="D:\Apps\ATAS Platform"
+```
+
+Release 构建 Pro 2.2.0 前，需要安装官方 TWS API 10.45 C# 源码。默认目录：
+
+```text
+C:\TWS API\source\CSharpClient\client
+```
+
+可以先验证本机源码：
+
+```powershell
+.\tools\Test-IbApiSource.ps1
+```
+
+如果源码安装在其他目录，可传入 `-p:IBApiSourceDir="..."`。官方 C# Client
+源码只编译进 Pro DLL，不提交到仓库；换电脑部署时只需复制最终 Pro DLL，
+不需要安装或另外复制 `CSharpAPI.dll` 或 `Google.Protobuf.dll`；构建时验证 IB 官方源码，
+并将官方 10.45 C# Client 运行库及 protobuf 作为资源封装进同一个 Pro DLL。仅做不连接 IB
+的开发/单元测试时，可显式使用：
+
+```powershell
+dotnet build .\FuturesReferencePriceAxis.sln -c Release -p:RequireIbApiSource=false
 ```
 
 指标 DLL：
@@ -129,6 +151,48 @@ Pro 设置组中需要填写 `Nightwatch API key`。该属性在 ATAS 设置面�
 两个数据列的头部只显示数据时间；状态面板会标明目标、数据 as-of 时间及
 `LIVE`、`NEXT SESSION`、`CLOSED`、`FROZEN`、`AUTH FAILED` 或 `RATE LIMITED` 状态，
 避免把休盘期间针对下一到期日的旧观测误标为实时 0DTE。
+
+## Pro IBKR 0DTE Option OI 与 Premium/Volume
+
+Pro 2.2.0 的最终列顺序为“映射轴 → Dealer Heatmap → Dealer GEX → Option OI →
+Option Premium/Volume”。两个 IBKR 列默认关闭，可独立启用；Nightwatch 和 IB Gateway
+任一数据源故障都不会阻止其他列或原映射轴工作。
+
+使用前请确认：
+
+- IB Gateway 已登录并启用 Socket API，建议开启 Read-Only API。
+- 账号具有 `OPRA (US Option Exchanges) (L1)` 实时权限。
+- Live Gateway 默认端口为 `4001`，请按实际 Gateway 配置修改。
+- Client ID 默认 `2210`，不应与其他 API 客户端冲突。插件不请求账户、持仓或订单数据。
+
+新增设置包括：
+
+- `Show Option OI`、`Show Option Premium/Volume`：分别控制两个列，默认关闭。
+- `Strike levels`：5–21 奇数档，默认 21（ATM 上下各 10 档）。
+- `Flow interval`：3、5 或 10 分钟，默认 5。
+- `Flow bucket mode`：默认上一固定完成桶，也可选择完整预热后的 Rolling。
+- `Trade scope`：默认 `RegularTrades`（generic tick 375），也可选择
+  `AllTimeAndSales`（generic tick 233）。
+- Gateway host/port/client ID 与插件行情线预算；默认预算 84 条。
+
+QQQ/NQ 只统计 RTH；SPX/ES 按 IB 合约的 `trading_hours` 与 `time_zone_id`
+统计 GTH 和 RTH。Flow 仅在交易区段前 2 分钟至结束后 1 分钟保留长期订阅；
+OI-only 最多以 8 个合约分批临时订阅。OI 日缓存位于
+`%LOCALAPPDATA%\WolfMoss\FuturesReferencePriceAxis\option-oi`。
+
+Call 在行上半部显示为绿色，Put 在下半部显示为红色。柱长以当前列全部可见
+Call/Put 的最大值共享归一化；缺失值显示 `?`，真实零值显示空柱。标签使用 K/M/B
+且不带美元符号；悬停可查看完整 OI、Premium、Volume、桶区间、统计口径、ATM
+相对档位和 RTH/GTH 状态。
+
+IB Gateway live smoke test 默认不会运行。完成正式 Release 构建并登录 Gateway 后，
+可显式执行（`spot` 为当前 QQQ/SPX 映射现价）：
+
+```powershell
+dotnet run --project .\tests\FuturesReferencePriceAxis.Tests\FuturesReferencePriceAxis.Tests.csproj `
+  -c Release --no-build -- --live-ib-options --ticker=SPX --spot=6500 `
+  --host=127.0.0.1 --port=4001 --client-id=2210 --levels=5 --seconds=20
+```
 
 ## 数据与限制
 

@@ -49,6 +49,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var dealerGexSnapshot = (visibility & DealerColumnVisibility.DealerGex) != 0
             ? Volatile.Read(ref _dealerGexSnapshot)
             : null;
+        var optionOiSnapshot = (visibility & DealerColumnVisibility.OptionOpenInterest) != 0
+            ? Volatile.Read(ref _optionOpenInterestSnapshot)
+            : null;
+        var optionFlowSnapshot = (visibility & DealerColumnVisibility.OptionPremiumFlow) != 0
+            ? Volatile.Read(ref _optionFlowSnapshot)
+            : null;
 
         if (TryGetCachedEditionStatusLines(
                 visibility,
@@ -98,6 +104,24 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             lines.Add($"Dealer GEX 信息: {snapshot.Message}");
         }
 
+        if (optionOiSnapshot is { } optionOi)
+        {
+            lines.Add($"Option OI: {optionOi.Ticker ?? "--"}；{OptionStateLabel(optionOi.Status)}");
+            lines.Add($"Option OI: {optionOi.Expiration:yyyy-MM-dd}；档位 {optionOi.ActiveStrikeCount}/{optionOi.RequestedStrikeCount}");
+            lines.Add($"Option OI 信息: {optionOi.Message}");
+        }
+
+        if (optionFlowSnapshot is { } optionFlow)
+        {
+            var bucket = optionFlow.BucketEndUtc.HasValue
+                ? FormatDealerTime(optionFlow.BucketEndUtc.Value)
+                : "--";
+            lines.Add($"Option Flow: {optionFlow.Ticker ?? "--"}；{OptionStateLabel(optionFlow.Status)}");
+            lines.Add($"Option Flow 数据: {bucket}；{optionFlow.IntervalMinutes}m {optionFlow.BucketMode}");
+            lines.Add($"Option Flow 行情线: {GetOptionActiveLineCount()}/{_ibOptionMarketDataLineBudget}");
+            lines.Add($"Option Flow 信息: {optionFlow.Message}");
+        }
+
         return CacheEditionStatusLines(
             visibility,
             heatmapSnapshot,
@@ -132,6 +156,22 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             DrawDealerGexColumn(
                 context,
                 GetColumnRectangle(axisRect.Value, dealerGexLeft),
+                effectiveRatio.Value);
+        }
+
+        if (columns.TryGetLeft(DealerColumnKind.OptionOpenInterest, out var optionOiLeft))
+        {
+            DrawOptionOpenInterestColumn(
+                context,
+                GetColumnRectangle(axisRect.Value, optionOiLeft),
+                effectiveRatio.Value);
+        }
+
+        if (columns.TryGetLeft(DealerColumnKind.OptionPremiumFlow, out var optionFlowLeft))
+        {
+            DrawOptionFlowColumn(
+                context,
+                GetColumnRectangle(axisRect.Value, optionFlowLeft),
                 effectiveRatio.Value);
         }
     }
@@ -175,6 +215,22 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 GetColumnRectangle(axisRect.Value, dealerGexLeft),
                 effectiveRatio.Value);
         }
+
+        if (columns.TryGetLeft(DealerColumnKind.OptionOpenInterest, out var optionOiLeft))
+        {
+            DrawOptionOpenInterestTooltip(
+                context,
+                GetColumnRectangle(axisRect.Value, optionOiLeft),
+                effectiveRatio.Value);
+        }
+
+        if (columns.TryGetLeft(DealerColumnKind.OptionPremiumFlow, out var optionFlowLeft))
+        {
+            DrawOptionFlowTooltip(
+                context,
+                GetColumnRectangle(axisRect.Value, optionFlowLeft),
+                effectiveRatio.Value);
+        }
     }
 
     private static Rectangle GetColumnRectangle(Rectangle axisRect, int left)
@@ -202,12 +258,13 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         var valueRange = _dealerRenderMetricsCache.GetHeatmapRange(frame);
 
-        foreach (var cell in frame.Cells)
+        for (var cellIndex = 0; cellIndex < frame.Cells.Count; cellIndex++)
         {
-            var cellRect = GetStrikeRectangle(
+            var cell = frame.Cells[cellIndex];
+            var cellRect = GetHeatmapCellRectangle(
                 heatmapRect,
-                frame.Ticker,
-                cell.StrikeUsd,
+                frame,
+                cellIndex,
                 effectiveRatio);
 
             if (cellRect == null)
@@ -366,6 +423,36 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         decimal ratio)
     {
         var bounds = DealerHeatmapPresentation.GetReferenceBounds(ticker, strike);
+        return GetStrikeRectangle(columnRect, bounds, ratio);
+    }
+
+    private Rectangle? GetHeatmapCellRectangle(
+        Rectangle columnRect,
+        DealerHeatmapFrame frame,
+        int cellIndex,
+        decimal ratio)
+    {
+        var cell = frame.Cells[cellIndex];
+        var lowerNeighbor = cellIndex > 0
+            ? frame.Cells[cellIndex - 1].StrikeUsd
+            : (decimal?)null;
+        var upperNeighbor = cellIndex + 1 < frame.Cells.Count
+            ? frame.Cells[cellIndex + 1].StrikeUsd
+            : (decimal?)null;
+        var bounds = DealerHeatmapPresentation.GetAdaptiveReferenceBounds(
+            frame.Ticker,
+            cell.StrikeUsd,
+            lowerNeighbor,
+            upperNeighbor);
+
+        return GetStrikeRectangle(columnRect, bounds, ratio);
+    }
+
+    private Rectangle? GetStrikeRectangle(
+        Rectangle columnRect,
+        (decimal Lower, decimal Upper) bounds,
+        decimal ratio)
+    {
         var chart = ChartInfo!;
         var firstY = chart.GetYByPrice(bounds.Upper * ratio);
         var secondY = chart.GetYByPrice(bounds.Lower * ratio);
@@ -521,13 +608,10 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         DealerHeatmapCell? hovered = null;
 
-        foreach (var cell in frame.Cells)
+        for (var cellIndex = 0; cellIndex < frame.Cells.Count; cellIndex++)
         {
-            var rect = GetStrikeRectangle(
-                heatmapRect,
-                frame.Ticker,
-                cell.StrikeUsd,
-                ratio);
+            var cell = frame.Cells[cellIndex];
+            var rect = GetHeatmapCellRectangle(heatmapRect, frame, cellIndex, ratio);
 
             if (rect?.Contains(position) == true)
             {

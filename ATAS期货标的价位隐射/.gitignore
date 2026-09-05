@@ -1,2 +1,5 @@
 # Local Codex MCP configuration may reference user-specific credentials.
 .codex/config.toml
+
+# User-licensed build-time dependencies are never committed.
+.external/ibapi/

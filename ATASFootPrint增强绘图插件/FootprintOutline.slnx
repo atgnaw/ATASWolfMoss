@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FootprintOutline/FootprintOutline.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FootprintOutline.HostTests/FootprintOutline.HostTests.csproj" />
+    <Project Path="tests/FootprintOutline.Tests/FootprintOutline.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -23,6 +23,23 @@ public static class DealerHeatmapPresentation
         return (strike - halfStep, strike + halfStep);
     }
 
+    public static (decimal Lower, decimal Upper) GetAdaptiveReferenceBounds(
+        string ticker,
+        decimal strike,
+        decimal? lowerNeighbor,
+        decimal? upperNeighbor)
+    {
+        var nominalHalfStep = GetStrikeStep(ticker) / 2m;
+        var lowerHalfStep = GetNeighborHalfStep(
+            nominalHalfStep,
+            lowerNeighbor.HasValue ? strike - lowerNeighbor.Value : null);
+        var upperHalfStep = GetNeighborHalfStep(
+            nominalHalfStep,
+            upperNeighbor.HasValue ? upperNeighbor.Value - strike : null);
+
+        return (strike - lowerHalfStep, strike + upperHalfStep);
+    }
+
     public static HeatmapRgb GetColor(
         decimal value,
         decimal minimum,
@@ -70,6 +87,14 @@ public static class DealerHeatmapPresentation
 
     private static string FormatScaled(decimal value)
         => value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static decimal GetNeighborHalfStep(decimal nominalHalfStep, decimal? distance)
+    {
+        if (!distance.HasValue || distance.Value <= 0m)
+            return nominalHalfStep;
+
+        return Math.Min(nominalHalfStep, distance.Value / 2m);
+    }
 
     private static HeatmapRgb Interpolate(
         HeatmapRgb start,

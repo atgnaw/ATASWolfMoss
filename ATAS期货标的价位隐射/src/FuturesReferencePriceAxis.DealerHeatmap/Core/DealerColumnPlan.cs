@@ -5,13 +5,17 @@ public enum DealerColumnVisibility
 {
     None = 0,
     Heatmap = 1 << 0,
-    DealerGex = 1 << 1
+    DealerGex = 1 << 1,
+    OptionOpenInterest = 1 << 2,
+    OptionPremiumFlow = 1 << 3
 }
 
 public enum DealerColumnKind
 {
     Heatmap,
-    DealerGex
+    DealerGex,
+    OptionOpenInterest,
+    OptionPremiumFlow
 }
 
 public readonly record struct DealerColumnPlan(
@@ -41,14 +45,24 @@ public static class DealerColumnPlanner
     private static readonly DealerColumnKind[] OrderedColumns =
     [
         DealerColumnKind.Heatmap,
-        DealerColumnKind.DealerGex
+        DealerColumnKind.DealerGex,
+        DealerColumnKind.OptionOpenInterest,
+        DealerColumnKind.OptionPremiumFlow
     ];
 
     public static DealerColumnVisibility FromToggles(
         bool showHeatmap,
-        bool showDealerGex)
+        bool showDealerGex,
+        bool showOptionOpenInterest = false,
+        bool showOptionPremiumFlow = false)
         => (showHeatmap ? DealerColumnVisibility.Heatmap : DealerColumnVisibility.None)
-           | (showDealerGex ? DealerColumnVisibility.DealerGex : DealerColumnVisibility.None);
+           | (showDealerGex ? DealerColumnVisibility.DealerGex : DealerColumnVisibility.None)
+           | (showOptionOpenInterest
+               ? DealerColumnVisibility.OptionOpenInterest
+               : DealerColumnVisibility.None)
+           | (showOptionPremiumFlow
+               ? DealerColumnVisibility.OptionPremiumFlow
+               : DealerColumnVisibility.None);
 
     public static int CalculateColumnWidth(
         int configuredWidth,
@@ -111,6 +125,8 @@ public static class DealerColumnPlanner
         {
             DealerColumnKind.Heatmap => DealerColumnVisibility.Heatmap,
             DealerColumnKind.DealerGex => DealerColumnVisibility.DealerGex,
+            DealerColumnKind.OptionOpenInterest => DealerColumnVisibility.OptionOpenInterest,
+            DealerColumnKind.OptionPremiumFlow => DealerColumnVisibility.OptionPremiumFlow,
             _ => DealerColumnVisibility.None
         };
 }

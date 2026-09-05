@@ -1,10 +1,17 @@
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Net.Http.Headers;
 
 using WolfMoss.ATAS.PriceMapping.Core;
+
+if (args.Contains("--live-ib-options", StringComparer.OrdinalIgnoreCase))
+{
+    await RunLiveIbOptionCheck(args);
+    return;
+}
 
 if (args.Contains("--live-dealer-heatmap", StringComparer.OrdinalIgnoreCase))
 {
@@ -79,6 +86,7 @@ var tests = new (string Name, Action Run)[]
     ("Dealer GEX parser rejection rules", TestDealerGexParserRejections),
     ("Dealer GEX presentation and structure labels", TestDealerGexPresentation),
     ("Dealer data column layout combinations", TestDealerColumnsLayout),
+    ("IBKR option ladder, buckets and column presentation", OptionFeatureTests.Run),
     ("Dealer render metrics cache", TestDealerRenderMetricsCache),
     ("Dealer GEX session states", TestDealerGexSessionStates),
     ("Dealer GEX request identity and shared Retry-After", TestDealerGexRequestPolicy),
@@ -991,6 +999,46 @@ static void TestDealerHeatmapPresentation()
     Equal(
         (730.5m, 731.5m),
         DealerHeatmapPresentation.GetReferenceBounds("QQQ", 731m));
+    Equal(
+        (730.75m, 731.25m),
+        DealerHeatmapPresentation.GetAdaptiveReferenceBounds(
+            "QQQ",
+            731m,
+            730.5m,
+            731.5m));
+    Equal(
+        (730.75m, 731.5m),
+        DealerHeatmapPresentation.GetAdaptiveReferenceBounds(
+            "QQQ",
+            731m,
+            730.5m,
+            733m));
+    Equal(
+        (730.5m, 731.5m),
+        DealerHeatmapPresentation.GetAdaptiveReferenceBounds(
+            "QQQ",
+            731m,
+            729m,
+            733m));
+    Equal(
+        (7783.75m, 7786.25m),
+        DealerHeatmapPresentation.GetAdaptiveReferenceBounds(
+            "SPX",
+            7785m,
+            7782.5m,
+            7787.5m));
+
+    var lowerDenseCell = DealerHeatmapPresentation.GetAdaptiveReferenceBounds(
+        "QQQ",
+        730.5m,
+        null,
+        731m);
+    var upperDenseCell = DealerHeatmapPresentation.GetAdaptiveReferenceBounds(
+        "QQQ",
+        731m,
+        730.5m,
+        null);
+    Equal(lowerDenseCell.Upper, upperDenseCell.Lower);
     Equal("350K", DealerHeatmapPresentation.FormatGex(350_000m));
     Equal("-2.04M", DealerHeatmapPresentation.FormatGex(-2_041_000m));
     Equal("1.86B", DealerHeatmapPresentation.FormatGex(1_863_784_818m));
@@ -1389,7 +1437,41 @@ static void TestEditionAssemblies()
         var standard = AssemblyLoadContext.Default.LoadFromAssemblyPath(standardPath);
         var pro = AssemblyLoadContext.Default.LoadFromAssemblyPath(proPath);
         Equal(new Version(1, 1, 0, 0), standard.GetName().Version!);
-        Equal(new Version(2, 1, 0, 0), pro.GetName().Version!);
+        Equal(new Version(2, 2, 0, 0), pro.GetName().Version!);
+
+#if !DEBUG
+        var proDirectory = Path.GetDirectoryName(proPath)!;
+        Assert(!File.Exists(Path.Combine(proDirectory, "CSharpAPI.dll")));
+        Assert(!File.Exists(Path.Combine(proDirectory, "Google.Protobuf.dll")));
+        var proResources = pro.GetManifestResourceNames();
+        Assert(proResources.Contains("EmbeddedDependencies.CSharpAPI.dll"));
+        Assert(proResources.Contains("EmbeddedDependencies.Google.Protobuf.dll"));
+        Assert(proResources.Contains("ThirdPartyNotices.IBKR.txt"));
+        Assert(proResources.Contains("ThirdPartyNotices.GoogleProtobuf.txt"));
+
+        Assert(pro.GetType("IBApi.EClientSocket", throwOnError: false) is null);
+        var resolverType = pro.GetType(
+            "WolfMoss.ATAS.PriceMapping.EmbeddedDependencyResolver",
+            throwOnError: true)!;
+        var loadIbApi = resolverType.GetMethod(
+            "TryLoadIbApiAssembly",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var ibApi = (Assembly?)loadIbApi.Invoke(null, null);
+        Assert(ibApi is not null);
+        Equal(new Version(10, 45, 1, 0), ibApi!.GetName().Version!);
+        Assert(string.IsNullOrEmpty(ibApi.Location));
+        Assert(ibApi.GetType("IBApi.EClientSocket", throwOnError: false) is not null);
+        var protobufMessageType = ibApi.GetType(
+            "IBApi.protobuf.MarketDataRequest",
+            throwOnError: true)!;
+        var protobufMessage = Activator.CreateInstance(protobufMessageType)!;
+        Assert(protobufMessage.ToString() is not null);
+        var loadedProtobuf = AppDomain.CurrentDomain.GetAssemblies()
+            .SingleOrDefault(static assembly =>
+                assembly.GetName().Name == "Google.Protobuf");
+        Assert(loadedProtobuf is not null);
+        Assert(string.IsNullOrEmpty(loadedProtobuf!.Location));
+#endif
 
         var standardType = standard.GetType(
             "WolfMoss.ATAS.PriceMapping.FuturesReferencePriceAxisIndicator",
@@ -1449,11 +1531,27 @@ static void TestEditionAssemblies()
                  {
                      "ShowDealerHeatmap", "ShowDealerGex", "NightwatchApiKey",
                      "DealerHeatmapRthRefreshMinutes",
-                     "DealerHeatmapOffHoursRefreshMinutes"
+                     "DealerHeatmapOffHoursRefreshMinutes",
+                     "ShowOptionOpenInterest", "ShowOptionPremiumFlow",
+                     "OptionStrikeLevels", "OptionFlowIntervalMinutes",
+                     "OptionFlowBucketMode", "OptionFlowTradeScope",
+                     "IbGatewayHost", "IbGatewayPort", "IbGatewayClientId",
+                     "IbOptionMarketDataLineBudget"
                  })
         {
             Assert(proProperties.ContainsKey(property), property);
         }
+        Equal(typeof(bool), proProperties["ShowOptionOpenInterest"].PropertyType);
+        Equal(typeof(bool), proProperties["ShowOptionPremiumFlow"].PropertyType);
+        Equal(typeof(int), proProperties["OptionStrikeLevels"].PropertyType);
+        Equal(typeof(int), proProperties["OptionFlowIntervalMinutes"].PropertyType);
+        Equal(typeof(string), proProperties["IbGatewayHost"].PropertyType);
+        Equal(typeof(int), proProperties["IbGatewayPort"].PropertyType);
+        Equal(typeof(int), proProperties["IbGatewayClientId"].PropertyType);
+        Equal(typeof(int), proProperties["IbOptionMarketDataLineBudget"].PropertyType);
+        Equal(
+            "WolfMoss.ATAS.PriceMapping.Core.OptionFlowBucketMode",
+            proProperties["OptionFlowBucketMode"].PropertyType.FullName!);
 
         Assert(proProperties["NightwatchApiKey"]
             .GetCustomAttributes()
@@ -1478,12 +1576,39 @@ static void TestEditionAssemblies()
             Assert(proSettingsSource.Contains(declaration, StringComparison.Ordinal));
         }
 
+        var optionSettingsSource = File.ReadAllText(Path.Combine(
+            root,
+            "src",
+            "FuturesReferencePriceAxis.DealerHeatmap",
+            "FuturesReferencePriceAxisDealerHeatmapIndicator.OptionSettings.cs"));
+        foreach (var declaration in new[]
+                 {
+                     "private bool _showOptionOpenInterest;",
+                     "private bool _showOptionPremiumFlow;",
+                     "private int _optionStrikeLevels = 21;",
+                     "private int _optionFlowIntervalMinutes = 5;",
+                     "OptionFlowBucketMode.PreviousCompletedFixed;",
+                     "OptionFlowTradeScope.RegularTrades;",
+                     "private string _ibGatewayHost = \"127.0.0.1\";",
+                     "private int _ibGatewayPort = 4001;",
+                     "private int _ibGatewayClientId = 2210;",
+                     "private int _ibOptionMarketDataLineBudget = 84;"
+                 })
+        {
+            Assert(optionSettingsSource.Contains(declaration, StringComparison.Ordinal));
+        }
+
         var standardBytes = File.ReadAllBytes(standardPath);
         var standardText = Encoding.UTF8.GetString(standardBytes);
         Assert(!standardText.Contains("Nightwatch", StringComparison.Ordinal));
         Assert(!standardText.Contains("DealerHeatmap", StringComparison.Ordinal));
         Assert(!standardText.Contains("DealerGex", StringComparison.Ordinal));
         Assert(!standardText.Contains("dealer-gex", StringComparison.Ordinal));
+        Assert(!standardText.Contains("IBApi", StringComparison.Ordinal));
+        Assert(!standardText.Contains("OptionOpenInterest", StringComparison.Ordinal));
+        Assert(!standardText.Contains("OptionPremiumFlow", StringComparison.Ordinal));
+        Assert(!standardText.Contains("IbGatewayHost", StringComparison.Ordinal));
+        Assert(!standardText.Contains("RTTradeVolume", StringComparison.Ordinal));
     }
     finally
     {
@@ -1604,6 +1729,104 @@ static string CreateMarketWatchJson(long[] timestamps, string[] closes)
             }
         }
     });
+}
+
+static async Task RunLiveIbOptionCheck(string[] arguments)
+{
+    static string? GetArgument(string[] values, string name)
+    {
+        var prefix = "--" + name + "=";
+        var item = values.FirstOrDefault(value =>
+            value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        return item?[prefix.Length..];
+    }
+
+    var ticker = (GetArgument(arguments, "ticker") ?? "SPX").ToUpperInvariant();
+
+    if (ticker is not ("SPX" or "QQQ"))
+        throw new ArgumentException("--ticker must be SPX or QQQ.");
+
+    if (!decimal.TryParse(GetArgument(arguments, "spot"),
+            NumberStyles.Number, CultureInfo.InvariantCulture, out var spot)
+        || spot <= 0m)
+    {
+        throw new ArgumentException("--spot=<current mapped SPX/QQQ price> is required.");
+    }
+
+    var host = GetArgument(arguments, "host") ?? "127.0.0.1";
+    var port = int.TryParse(GetArgument(arguments, "port"), out var parsedPort)
+        ? parsedPort
+        : 4001;
+    var clientId = int.TryParse(GetArgument(arguments, "client-id"), out var parsedClientId)
+        ? parsedClientId
+        : 2210;
+    var levels = int.TryParse(GetArgument(arguments, "levels"), out var parsedLevels)
+        ? parsedLevels
+        : 5;
+    var seconds = int.TryParse(GetArgument(arguments, "seconds"), out var parsedSeconds)
+        ? parsedSeconds
+        : 20;
+    var root = FindRepositoryRoot();
+#if DEBUG
+    const string configuration = "Debug";
+#else
+    const string configuration = "Release";
+#endif
+    var proPath = Path.GetFullPath(Path.Combine(
+        root,
+        "src",
+        "FuturesReferencePriceAxis.DealerHeatmap",
+        "bin",
+        configuration,
+        "FuturesReferencePriceAxis.DealerHeatmap.dll"));
+
+    Assembly? ResolveAtasAssembly(AssemblyLoadContext context, AssemblyName name)
+    {
+        var candidate = Path.Combine(
+            @"C:\Program Files (x86)\ATAS Platform",
+            name.Name + ".dll");
+        return File.Exists(candidate)
+            ? context.LoadFromAssemblyPath(candidate)
+            : null;
+    }
+
+    AssemblyLoadContext.Default.Resolving += ResolveAtasAssembly;
+
+    try
+    {
+        var pro = AssemblyLoadContext.Default.LoadFromAssemblyPath(proPath);
+
+        var resolverType = pro.GetType(
+            "WolfMoss.ATAS.PriceMapping.EmbeddedDependencyResolver",
+            throwOnError: true)!;
+        var loadIbApi = resolverType.GetMethod(
+            "TryLoadIbApiAssembly",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        var ibApi = (Assembly?)loadIbApi.Invoke(null, null);
+        if (ibApi?.GetType("IBApi.EClientSocket") == null)
+        {
+            throw new InvalidOperationException(
+                "Release DLL does not contain a loadable official IB API runtime.");
+        }
+
+        var smokeType = pro.GetType(
+            "WolfMoss.ATAS.PriceMapping.IbOptionLiveSmokeTest",
+            throwOnError: true)!;
+        var method = smokeType.GetMethod("RunAsync", BindingFlags.Public | BindingFlags.Static)!;
+        var task = (Task)method.Invoke(null, new object[]
+        {
+            host, port, clientId, ticker, spot, levels, seconds, CancellationToken.None
+        })!;
+        await task.ConfigureAwait(false);
+        var result = method.ReturnType.GetProperty("Result")!.GetValue(task)!;
+        var values = result.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .Select(property => $"{property.Name}={property.GetValue(result)}");
+        Console.WriteLine("LIVE IB  " + string.Join(" ", values));
+    }
+    finally
+    {
+        AssemblyLoadContext.Default.Resolving -= ResolveAtasAssembly;
+    }
 }
 
 static async Task RunLiveDealerHeatmapCheck(string[] arguments)

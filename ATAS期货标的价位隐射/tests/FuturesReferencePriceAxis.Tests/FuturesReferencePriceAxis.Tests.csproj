@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="OptionFeatureTests.cs" />
     <Compile Include="..\..\src\FuturesReferencePriceAxis\Core\*.cs"
              Link="Core\%(Filename)%(Extension)" />
     <Compile Include="..\..\src\FuturesReferencePriceAxis.DealerHeatmap\Core\*.cs"

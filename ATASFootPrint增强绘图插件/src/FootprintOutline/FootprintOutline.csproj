@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>FootprintOutline</AssemblyName>
+    <RootNamespace>WolfMoss.ATAS.FootprintOutline</RootNamespace>
+    <Version>1.0.1</Version>
+    <Authors>WolfMoss</Authors>
+    <Description>ATAS Volume Profile closed staircase outline, custom proportion mode.</Description>
+    <ATASInstallDir Condition="'$(ATASInstallDir)' == ''">C:\Program Files (x86)\ATAS Platform</ATASInstallDir>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="ATAS.Indicators"><HintPath>$(ATASInstallDir)\ATAS.Indicators.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="ATAS.Types"><HintPath>$(ATASInstallDir)\ATAS.Types.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="OFT.Rendering"><HintPath>$(ATASInstallDir)\OFT.Rendering.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="OFT.Attributes"><HintPath>$(ATASInstallDir)\OFT.Attributes.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Utils.Common"><HintPath>$(ATASInstallDir)\Utils.Common.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <Target Name="CheckAtasReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(ATASInstallDir)\ATAS.Indicators.dll')" Text="ATAS.Indicators.dll not found. Set -p:ATASInstallDir to your ATAS installation directory." />
+  </Target>
+</Project>

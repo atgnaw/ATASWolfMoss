@@ -12,7 +12,11 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     private IReadOnlyList<string> _cachedEditionStatusLines = Array.Empty<string>();
 
     private DealerColumnVisibility VisibleDealerColumns
-        => DealerColumnPlanner.FromToggles(_showDealerHeatmap, _showDealerGex);
+        => DealerColumnPlanner.FromToggles(
+            _showDealerHeatmap,
+            _showDealerGex,
+            _showOptionOpenInterest,
+            _showOptionPremiumFlow);
 
     private bool TryGetCachedEditionStatusLines(
         DealerColumnVisibility visibility,
@@ -20,7 +24,11 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         DealerGexSnapshot? dealerGexSnapshot,
         out IReadOnlyList<string> lines)
     {
-        if (_cachedStatusVisibility == visibility
+        var optionColumns = DealerColumnVisibility.OptionOpenInterest
+                            | DealerColumnVisibility.OptionPremiumFlow;
+
+        if ((visibility & optionColumns) == 0
+            && _cachedStatusVisibility == visibility
             && _cachedStatusUtcOffset == ConfiguredUiUtcOffsetHours
             && ReferenceEquals(_cachedStatusHeatmapSnapshot, heatmapSnapshot)
             && ReferenceEquals(_cachedStatusDealerGexSnapshot, dealerGexSnapshot))

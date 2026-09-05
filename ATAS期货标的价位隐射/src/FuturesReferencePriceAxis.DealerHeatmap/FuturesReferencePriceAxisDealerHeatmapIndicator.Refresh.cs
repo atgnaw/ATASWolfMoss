@@ -17,20 +17,26 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     {
         _dealerHeatmapLifetimeCancellation = new CancellationTokenSource();
         RestartDealerHeatmapSchedule();
+        InitializeOptionData();
     }
 
     protected override void OnEditionFinishRecalculate()
-        => RestartDealerHeatmapSchedule();
+    {
+        RestartDealerHeatmapSchedule();
+        RestartOptionDataSchedule();
+    }
 
     protected override void OnEditionDataProviderChanged()
     {
         if (DataProvider == null)
         {
             StopDealerHeatmapSchedule();
+            PauseOptionDataSchedule();
             return;
         }
 
         RestartDealerHeatmapSchedule();
+        RestartOptionDataSchedule();
     }
 
     protected override void OnEditionConfigurationChanged()
@@ -39,10 +45,13 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         if (IsIndicatorInitialized)
             RestartDealerHeatmapSchedule();
+
+        RestartOptionDataSchedule();
     }
 
     protected override void OnEditionDisposing()
     {
+        StopOptionData();
         Interlocked.Increment(ref _dealerHeatmapGeneration);
         StopDealerHeatmapSchedule();
         _dealerHeatmapLifetimeCancellation?.Cancel();
