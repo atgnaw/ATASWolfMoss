@@ -54,19 +54,25 @@ public static class OptionPresentation
             or OptionDataStatus.LineLimit
             or OptionDataStatus.Frozen;
 
-    public static string GetFlowMissingMarker(OptionDataStatus status)
-        => IsFlowDataUnavailable(status)
+    public static string GetFlowMissingMarker(
+        OptionDataStatus status, OptionFlowCoverage? coverage = null)
+        => IsFlowDataUnavailable(status) || coverage == OptionFlowCoverage.NoData
             ? UnknownDataMarker
             : NoEventsMarker;
 
     public static string GetFlowCoverageLabel(
         OptionDataStatus status,
         bool hasValue,
-        bool isPartial)
+        bool isPartial,
+        OptionFlowCoverage? coverage = null)
     {
         if (hasValue)
             return isPartial ? "PARTIAL" : "FULL";
 
-        return IsFlowDataUnavailable(status) ? "NO DATA" : "NO EVENTS";
+        return IsFlowDataUnavailable(status) || coverage == OptionFlowCoverage.NoData
+            ? "NO DATA" : "NO EVENTS";
     }
+
+    public static string FormatFlowValue(decimal value, bool isPartial)
+        => FormatCompact(value) + (isPartial ? "*" : string.Empty);
 }

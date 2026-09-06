@@ -39,6 +39,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             _optionFlowTradeScope == OptionFlowTradeScope.RegularTrades,
             _optionFlowTradeScope == OptionFlowTradeScope.AllTimeAndSales);
         var gateway = GetOrCreateOptionGateway();
+        lock (_optionDataSync)
+            _rollingFlow.Resume(CurrentUtcTime());
         var subscription = await gateway.SubscribeAsync(
                 contracts,
                 requirements,

@@ -120,6 +120,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             lines.Add($"Option Flow 数据: {bucket}；{optionFlow.IntervalMinutes}m {optionFlow.BucketMode}");
             lines.Add($"Option Flow 行情线: {GetOptionActiveLineCount()}/{_ibOptionMarketDataLineBudget}");
             lines.Add($"Option Flow 信息: {optionFlow.Message}");
+            if (optionFlow.BucketMode == OptionFlowBucketMode.Rolling
+                && optionFlow.AtmLockedUntilUtc.HasValue)
+                lines.Add($"Option Flow ATM: {optionFlow.AtmStrikeUsd}；锁定至 {FormatOptionalOptionTime(optionFlow.AtmLockedUntilUtc)}");
         }
 
         return CacheEditionStatusLines(

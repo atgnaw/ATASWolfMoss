@@ -55,7 +55,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             snapshot.AtmStrikeUsd,
             maximum,
             useOpenInterest: true,
-            OptionPresentation.UnknownDataMarker);
+            OptionDataStatus.Daily);
     }
 
     private void DrawOptionFlowColumn(
@@ -85,7 +85,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             snapshot.AtmStrikeUsd,
             maximum,
             useOpenInterest: false,
-            OptionPresentation.GetFlowMissingMarker(snapshot.Status));
+            snapshot.Status);
     }
 
     private void DrawOptionRows(
@@ -96,7 +96,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         decimal? atmStrike,
         decimal maximum,
         bool useOpenInterest,
-        string missingMarker)
+        OptionDataStatus status)
     {
         var ordered = rows.OrderBy(static row => row.StrikeUsd).ToArray();
         var strikes = ordered.Select(static row => row.StrikeUsd).ToArray();
@@ -108,7 +108,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 columnRect,
                 strikes,
                 index,
-                ratio);
+                ratio,
+                row.FlowLowerBoundUsd,
+                row.FlowUpperBoundUsd);
 
             if (!rowRect.HasValue)
                 continue;
@@ -130,8 +132,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             var putValue = useOpenInterest
                 ? row.PutOpenInterest
                 : row.PutPremium;
-            DrawOptionLane(context, callRect, callValue, maximum, OptionCallColor, missingMarker);
-            DrawOptionLane(context, putRect, putValue, maximum, OptionPutColor, missingMarker);
+            var callMarker = useOpenInterest ? OptionPresentation.UnknownDataMarker
+                : OptionPresentation.GetFlowMissingMarker(status, row.CallFlowCoverage);
+            var putMarker = useOpenInterest ? OptionPresentation.UnknownDataMarker
+                : OptionPresentation.GetFlowMissingMarker(status, row.PutFlowCoverage);
+            var callColor = !useOpenInterest && row.CallFlowRetained
+                ? DrawingColor.FromArgb(130, OptionCallColor) : OptionCallColor;
+            var putColor = !useOpenInterest && row.PutFlowRetained
+                ? DrawingColor.FromArgb(130, OptionPutColor) : OptionPutColor;
+            DrawOptionLane(context, callRect, callValue, maximum, callColor, callMarker,
+                !useOpenInterest && row.CallFlowIsPartial);
+            DrawOptionLane(context, putRect, putValue, maximum, putColor, putMarker,
+                !useOpenInterest && row.PutFlowIsPartial);
 
             if (atmStrike.HasValue && row.StrikeUsd == atmStrike.Value)
                 DrawBorder(context, rowRect.Value, OptionAtmColor);
@@ -144,7 +156,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         decimal? value,
         decimal maximum,
         DrawingColor color,
-        string missingMarker)
+        string missingMarker,
+        bool isPartial)
     {
         if (!value.HasValue)
         {
@@ -162,7 +175,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
 
         context.FillRectangle(OptionTrackBackground, track);
-        DrawOptionBar(context, track, value.Value, maximum, color);
+        DrawOptionBar(context, track, value.Value, maximum, color, isPartial);
     }
 
     private void DrawOptionBar(
@@ -170,7 +183,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         Rectangle track,
         decimal value,
         decimal maximum,
-        DrawingColor color)
+        DrawingColor color,
+        bool isPartial)
     {
         var ratio = OptionPresentation.GetFillRatio(value, maximum);
         var width = (int)Math.Round(track.Width * ratio);
@@ -186,7 +200,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
 
         context.DrawString(
-            OptionPresentation.FormatCompact(value),
+            OptionPresentation.FormatFlowValue(value, isPartial),
             ChartInfo!.PriceAxisFont,
             DrawingColor.White,
             new Rectangle(track.Left + 2, track.Top, track.Width - 4, track.Height),
@@ -197,9 +211,13 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         Rectangle columnRect,
         IReadOnlyList<decimal> orderedStrikes,
         int index,
-        decimal ratio)
+        decimal ratio,
+        decimal? lowerBound = null,
+        decimal? upperBound = null)
     {
-        var bounds = OptionStrikeSelection.GetRowBounds(orderedStrikes, index);
+        var bounds = lowerBound.HasValue && upperBound.HasValue
+            ? (Lower: lowerBound.Value, Upper: upperBound.Value)
+            : OptionStrikeSelection.GetRowBounds(orderedStrikes, index);
         var chart = ChartInfo!;
         var firstY = chart.GetYByPrice(bounds.Upper * ratio);
         var secondY = chart.GetYByPrice(bounds.Lower * ratio);
@@ -267,13 +285,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var isPartial = right == OptionRight.Call
             ? row.CallFlowIsPartial
             : row.PutFlowIsPartial;
+        var flowCoverage = right == OptionRight.Call
+            ? row.CallFlowCoverage : row.PutFlowCoverage;
+        var retained = right == OptionRight.Call
+            ? row.CallFlowRetained : row.PutFlowRetained;
         var coverage = OptionPresentation.GetFlowCoverageLabel(
             snapshot.Status,
             premium.HasValue,
-            isPartial);
+            isPartial,
+            flowCoverage);
         var location = GetOptionStrikeLocation(snapshot.Rows, row.StrikeUsd, snapshot.AtmStrikeUsd);
         var session = GetOptionSessionLabel(snapshot.Ticker, snapshot.BucketEndUtc);
-        DrawTooltip(context, MouseLocationInfo!.LastPosition, new[]
+        var lines = new List<string>
         {
             $"{snapshot.Ticker} {row.StrikeUsd.ToString("0.####", CultureInfo.InvariantCulture)} {right}",
             $"Premium {(premium.HasValue ? premium.Value.ToString("#,0.##", CultureInfo.InvariantCulture) : "--")}",
@@ -286,7 +309,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             $"Observed from {FormatOptionalOptionTime(observedStartUtc)}",
             $"Session {session}",
             $"Received {FormatDealerTime(snapshot.ReceivedUtc)}"
-        }, 360);
+        };
+        if (snapshot.BucketMode == OptionFlowBucketMode.Rolling)
+        {
+            lines.Add(retained
+                ? "RETAINED / 已移出范围，仅保留窗口内旧数据"
+                : "ACTIVE / 当前接收范围");
+            if (snapshot.AtmLockedUntilUtc.HasValue)
+                lines.Add($"ATM locked until {FormatOptionalOptionTime(snapshot.AtmLockedUntilUtc)}");
+            if (isPartial)
+                lines.Add("* PARTIAL / 仅统计已观察到的部分成交");
+        }
+        DrawTooltip(context, MouseLocationInfo!.LastPosition, lines.ToArray(), 420);
     }
 
     private bool TryGetHoveredOptionRow(
@@ -315,7 +349,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         for (var index = 0; index < ordered.Length; index++)
         {
-            var candidate = GetOptionRowRectangle(rect, strikes, index, ratio);
+            var candidate = GetOptionRowRectangle(rect, strikes, index, ratio,
+                ordered[index].FlowLowerBoundUsd, ordered[index].FlowUpperBoundUsd);
 
             if (!candidate.HasValue || !candidate.Value.Contains(mouse.LastPosition))
                 continue;

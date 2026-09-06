@@ -110,6 +110,14 @@ public readonly record struct OptionContractCoverage(
     }
 }
 
+public enum OptionFlowCoverage
+{
+    Full,
+    Partial,
+    NoEvents,
+    NoData
+}
+
 public sealed record OptionStrikeLadder(
     string Ticker,
     DateOnly Expiration,
@@ -128,7 +136,13 @@ public readonly record struct OptionStrikeRow(
     DateTime? CallFlowObservedStartUtc = null,
     DateTime? PutFlowObservedStartUtc = null,
     bool CallFlowIsPartial = false,
-    bool PutFlowIsPartial = false);
+    bool PutFlowIsPartial = false,
+    OptionFlowCoverage? CallFlowCoverage = null,
+    OptionFlowCoverage? PutFlowCoverage = null,
+    bool CallFlowRetained = false,
+    bool PutFlowRetained = false,
+    decimal? FlowLowerBoundUsd = null,
+    decimal? FlowUpperBoundUsd = null);
 
 public sealed record OptionOpenInterestSnapshot(
     string? Ticker,
@@ -164,7 +178,9 @@ public sealed record OptionFlowSnapshot(
     OptionFlowTradeScope TradeScope,
     int IntervalMinutes,
     int RequestedStrikeCount,
-    int ActiveStrikeCount)
+    int ActiveStrikeCount,
+    DateTime? AtmLockedUntilUtc = null,
+    int RetainedStrikeCount = 0)
 {
     public static OptionFlowSnapshot Disabled(
         DateTime utcNow,

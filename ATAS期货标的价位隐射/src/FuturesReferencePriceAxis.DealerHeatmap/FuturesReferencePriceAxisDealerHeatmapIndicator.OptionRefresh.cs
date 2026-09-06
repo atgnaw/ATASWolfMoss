@@ -14,6 +14,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     private readonly Dictionary<long, long> _optionOpenInterest = new();
     private readonly Dictionary<long, List<OptionCumulativeSample>> _regularTradeSamples = new();
     private readonly Dictionary<long, List<OptionCumulativeSample>> _allTradeSamples = new();
+    private readonly OptionRollingFlowState _rollingFlow = new();
     private CancellationTokenSource? _optionLifetimeCancellation;
     private CancellationTokenSource? _optionScheduleCancellation;
     private IbOptionGatewayPool.Lease? _optionGatewayLease;
@@ -64,6 +65,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             _optionScheduleCancellation?.Cancel();
             _optionScheduleCancellation?.Dispose();
             _optionScheduleCancellation = null;
+            lock (_optionDataSync)
+                _rollingFlow.Suspend(CurrentUtcTime());
             _optionSubscription?.Dispose();
             _optionSubscription = null;
             var nowUtc = CurrentUtcTime();
@@ -229,8 +232,25 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                                 StringComparison.OrdinalIgnoreCase)
                             || _activeOptionExpiration != expiration;
         var atmChanged = candidateAtm != _activeOptionSelectionAtmStrike;
+        var rollingMode = _showOptionPremiumFlow
+                          && _optionFlowBucketMode == OptionFlowBucketMode.Rolling;
 
-        if (!targetChanged && atmChanged && _activeOptionSelectionAtmStrike > 0m)
+        if (!targetChanged && rollingMode)
+        {
+            bool holdLadder;
+            lock (_optionDataSync)
+            {
+                _rollingFlow.AdvanceClock(nowUtc);
+                holdLadder = _rollingFlow.IsLadderLocked(nowUtc);
+            }
+            if (holdLadder)
+            {
+                await MaintainOptionSubscriptionAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+        }
+
+        if (!rollingMode && !targetChanged && atmChanged && _activeOptionSelectionAtmStrike > 0m)
         {
             if (_candidateAtmStrike != candidateAtm)
             {
@@ -282,8 +302,21 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
         else
         {
+            if (rollingMode)
+            {
+                lock (_optionDataSync)
+                {
+                    if (!_rollingFlow.HasLadder)
+                        ConfigureRollingLadder(nowUtc);
+                }
+            }
             await MaintainOptionSubscriptionAsync(cancellationToken).ConfigureAwait(false);
             AdvanceFixedFlowBucketLock(nowUtc);
+            if (rollingMode)
+            {
+                lock (_optionDataSync)
+                    _rollingFlow.RenewAtmLock(_activeAtmStrike, nowUtc, _optionFlowIntervalMinutes);
+            }
 
             if (_showOptionOpenInterest
                  && _optionSubscription == null
@@ -370,6 +403,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
             if (targetChanged)
             {
+                _rollingFlow.Clear();
                 _regularTradeSamples.Clear();
                 _allTradeSamples.Clear();
                 _flowCoverageStartUtc = configuredUtc;
@@ -399,6 +433,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 if (_flowCoverageStartUtc == DateTime.MinValue)
                     _flowCoverageStartUtc = configuredUtc;
             }
+
+            if (_showOptionPremiumFlow && _optionFlowBucketMode == OptionFlowBucketMode.Rolling)
+                ConfigureRollingLadder(configuredUtc);
         }
 
         await MaintainOptionSubscriptionAsync(cancellationToken).ConfigureAwait(false);
@@ -408,6 +445,20 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 .ConfigureAwait(false);
 
         ScheduleNextOiRetry(CurrentUtcTime());
+    }
+
+    // Caller holds _optionDataSync; keep contract discovery outside this lock.
+    private void ConfigureRollingLadder(DateTime nowUtc)
+    {
+        var segments = _activeOptionContracts.Count == 0
+            ? Array.Empty<OptionTradingSegment>()
+            : IbTradingHoursParser.Parse(
+                _activeOptionContracts[0].TradingHours,
+                _activeOptionContracts[0].TradingTimeZoneId,
+                string.Equals(_activeOptionTicker, "SPX", StringComparison.OrdinalIgnoreCase));
+        _rollingFlow.SetTradingSegments(segments, nowUtc);
+        _rollingFlow.ConfigureLadder(_activeOptionContracts, _activeAtmStrike,
+            nowUtc, _optionFlowIntervalMinutes);
     }
 
     private async Task FetchOpenInterestInBatchesAsync(
@@ -505,11 +556,22 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 _oiCacheDirty = true;
             }
 
-            if (update.RegularTrades.HasValue)
-                AddCumulativeSample(_regularTradeSamples, update.RegularTrades.Value);
-
-            if (update.AllTimeAndSales.HasValue)
-                AddCumulativeSample(_allTradeSamples, update.AllTimeAndSales.Value);
+            if (_optionFlowBucketMode == OptionFlowBucketMode.Rolling)
+            {
+                if (update.RegularTrades.HasValue)
+                    _rollingFlow.Add(update.RegularTrades.Value,
+                        OptionFlowTradeScope.RegularTrades, update.ReceivedUtc);
+                if (update.AllTimeAndSales.HasValue)
+                    _rollingFlow.Add(update.AllTimeAndSales.Value,
+                        OptionFlowTradeScope.AllTimeAndSales, update.ReceivedUtc);
+            }
+            else
+            {
+                if (update.RegularTrades.HasValue)
+                    AddCumulativeSample(_regularTradeSamples, update.RegularTrades.Value);
+                if (update.AllTimeAndSales.HasValue)
+                    AddCumulativeSample(_allTradeSamples, update.AllTimeAndSales.Value);
+            }
         }
 
         RequestRedraw();
@@ -626,6 +688,13 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         DateTime coverageStartUtc,
         bool delayed)
     {
+        if (_optionFlowBucketMode == OptionFlowBucketMode.Rolling)
+        {
+            lock (_optionDataSync)
+                return _rollingFlow.CreateSnapshot(ticker, expiration, nowUtc,
+                    _optionFlowIntervalMinutes, _optionFlowTradeScope, _optionStrikeLevels, delayed);
+        }
+
         var segments = contracts.Count == 0
             ? Array.Empty<OptionTradingSegment>()
             : IbTradingHoursParser.Parse(
@@ -666,21 +735,6 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     startUtc.Value,
                     endUtc.Value,
                     allowPartial: true,
-                    values);
-            }
-        }
-        else if (_optionFlowBucketMode == OptionFlowBucketMode.Rolling)
-        {
-            startUtc = nowUtc.AddMinutes(-_optionFlowIntervalMinutes);
-            endUtc = nowUtc;
-
-            if (coverageStartUtc <= startUtc)
-            {
-                PopulateIntervalValues(
-                    samples,
-                    startUtc.Value,
-                    endUtc.Value,
-                    allowPartial: false,
                     values);
             }
         }
@@ -896,6 +950,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     {
         lock (_optionDataSync)
         {
+            _rollingFlow.Clear();
             _regularTradeSamples.Clear();
             _allTradeSamples.Clear();
             _flowCoverageStartUtc = DateTime.MinValue;
@@ -919,6 +974,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         if (errorCode is "NO_PERMISSION" or "LINE_LIMIT" or "NO_CONTRACTS")
             return;
 
+        lock (_optionDataSync)
+            _rollingFlow.Suspend(CurrentUtcTime());
         _optionSubscription?.Dispose();
         _optionSubscription = null;
         _ = ReleaseOptionGatewayAsync();

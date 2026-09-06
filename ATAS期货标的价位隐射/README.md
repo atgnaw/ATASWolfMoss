@@ -169,8 +169,8 @@ Option Premium/Volume”。两个 IBKR 列默认关闭，可独立启用；Night
 
 - `Show Option OI`、`Show Option Premium/Volume`：分别控制两个列，默认关闭。
 - `Strike levels`：5–21 奇数档，默认 21（ATM 上下各 10 档）。
-- `Flow interval`：3、5 或 10 分钟，默认 5。
-- `Flow bucket mode`：默认上一固定完成桶，也可选择完整预热后的 Rolling。
+- `Flow interval`：1、3、5 或 10 分钟，默认 5。
+- `Flow bucket mode`：默认上一固定完成桶，也可选择 Rolling。
 - `Trade scope`：默认 `RegularTrades`（generic tick 375），也可选择
   `AllTimeAndSales`（generic tick 233）。
 - Gateway host/port/client ID 与插件行情线预算；默认预算 84 条。
@@ -181,9 +181,20 @@ OI-only 最多以 8 个合约分批临时订阅。OI 日缓存位于
 `%LOCALAPPDATA%\WolfMoss\FuturesReferencePriceAxis\option-oi`。
 
 Call 在行上半部显示为绿色，Put 在下半部显示为红色。柱长以当前列全部可见
-Call/Put 的最大值共享归一化；缺失值显示 `?`，真实零值显示空柱。标签使用 K/M/B
+Call/Put 的最大值共享归一化；无事件显示 `·`，缺失数据或缺少可用基线显示 `?`，
+真实零值显示空柱。标签使用 K/M/B
 且不带美元符号；悬停可查看完整 OI、Premium、Volume、桶区间、统计口径、ATM
 相对档位和 RTH/GTH 状态。
+
+Rolling 始终计算最近 N 分钟；ATM 与当前接收的执行价范围锁定 N 分钟，
+到期后按最新映射价格重新选择（即使 ATM 未变也重新锁定 N 分钟）。
+换档后重叠合约保留累计样本；移出范围的合约不再接收新数据，但已有成交
+会继续显示，直到自然滚出窗口。过渡期间 Flow 可显示超过设置档数的价位，
+这些保留行不增加行情线，柱色变淡，悬停标记 `RETAINED`。
+新进入合约的第一笔推送较晚时，统计可确认的成交并以数值后的 `*` 和
+悬停 `PARTIAL` 标记部分覆盖。合约重新进入范围或断线重连后建立新的基线，
+不跨未观察区间相减。窗口限制在同一交易区段内；新交易区段清除旧区段数据，
+初期不足 N 分钟的有效统计也标记 `PARTIAL`，收盘后保留截至收盘的窗口。
 
 IB Gateway live smoke test 默认不会运行。完成正式 Release 构建并登录 Gateway 后，
 可显式执行（`spot` 为当前 QQQ/SPX 映射现价）：
