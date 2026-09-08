@@ -17,6 +17,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     private readonly OptionRollingFlowState _rollingFlow = new();
     private CancellationTokenSource? _optionLifetimeCancellation;
     private CancellationTokenSource? _optionScheduleCancellation;
+    private Task _optionLoopTask = Task.CompletedTask;
+    private bool _optionResetGatewayPending;
+    private bool _optionResetFlowPending;
     private IbOptionGatewayPool.Lease? _optionGatewayLease;
     private IIbOptionSubscriptionLease? _optionSubscription;
     private OptionOpenInterestSnapshot _optionOpenInterestSnapshot =
@@ -53,22 +56,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         RestartOptionDataSchedule();
     }
 
-    private void RestartOptionDataSchedule()
+    private void RestartOptionDataSchedule(bool resetGateway = false, bool resetFlowAggregation = false)
     {
-        CancellationToken cancellationToken;
-
         lock (_optionScheduleSync)
         {
             if (!IsIndicatorInitialized || _optionLifetimeCancellation == null)
                 return;
 
             _optionScheduleCancellation?.Cancel();
-            _optionScheduleCancellation?.Dispose();
             _optionScheduleCancellation = null;
-            lock (_optionDataSync)
-                _rollingFlow.Suspend(CurrentUtcTime());
-            _optionSubscription?.Dispose();
-            _optionSubscription = null;
+            _optionResetGatewayPending |= resetGateway;
+            _optionResetFlowPending |= resetFlowAggregation;
+            var generation = Interlocked.Increment(ref _optionDataGeneration);
             var nowUtc = CurrentUtcTime();
 
             if (!_showOptionOpenInterest)
@@ -85,17 +84,57 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
             if (!_showOptionOpenInterest && !_showOptionPremiumFlow)
             {
-                _ = ReleaseOptionGatewayAsync();
+                var previous = _optionLoopTask;
+                _optionLoopTask = Task.Run(async () =>
+                {
+                    try { await previous.ConfigureAwait(false); } catch { }
+                    await ReleaseOptionGatewayAsync().ConfigureAwait(false);
+                });
                 return;
             }
 
             _optionScheduleCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 _optionLifetimeCancellation.Token);
-            cancellationToken = _optionScheduleCancellation.Token;
+            var source = _optionScheduleCancellation;
+            var predecessor = _optionLoopTask;
+            _optionLoopTask = Task.Run(() => RunOptionGenerationAsync(predecessor, generation, source));
         }
+    }
 
-        var generation = Interlocked.Read(ref _optionDataGeneration);
-        _ = RunOptionDataLoopAsync(generation, cancellationToken);
+    private async Task RunOptionGenerationAsync(Task previous, long generation, CancellationTokenSource source)
+    {
+        var token = source.Token;
+        var started = false;
+        try
+        {
+            try { await previous.ConfigureAwait(false); } catch { }
+            token.ThrowIfCancellationRequested();
+            bool resetGateway, resetFlow;
+            lock (_optionScheduleSync)
+            {
+                token.ThrowIfCancellationRequested();
+                resetGateway = _optionResetGatewayPending;
+                resetFlow = _optionResetFlowPending;
+                _optionResetGatewayPending = _optionResetFlowPending = false;
+            }
+            if (resetGateway) await ReleaseOptionGatewayAsync().ConfigureAwait(false);
+            if (resetFlow) ResetOptionFlowAggregation();
+            started = true;
+            await RunOptionDataLoopAsync(generation, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        finally
+        {
+            if (started)
+            {
+                SuspendOptionObservation(CurrentUtcTime());
+                Interlocked.Exchange(ref _optionSubscription, null)?.Dispose();
+                SaveOpenInterestCacheIfNeeded();
+            }
+            lock (_optionScheduleSync)
+                if (ReferenceEquals(_optionScheduleCancellation, source)) _optionScheduleCancellation = null;
+            source.Dispose();
+        }
     }
 
     private void PauseOptionDataSchedule()
@@ -105,10 +144,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         lock (_optionScheduleSync)
         {
             _optionScheduleCancellation?.Cancel();
-            _optionScheduleCancellation?.Dispose();
             _optionScheduleCancellation = null;
-            _optionSubscription?.Dispose();
-            _optionSubscription = null;
         }
     }
 
@@ -119,16 +155,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         lock (_optionScheduleSync)
         {
             _optionScheduleCancellation?.Cancel();
-            _optionScheduleCancellation?.Dispose();
             _optionScheduleCancellation = null;
-            _optionSubscription?.Dispose();
-            _optionSubscription = null;
+            var previous = _optionLoopTask;
+            _optionLoopTask = Task.Run(async () =>
+            {
+                try { await previous.ConfigureAwait(false); } catch { }
+                await ReleaseOptionGatewayAsync().ConfigureAwait(false);
+            });
         }
 
         _optionLifetimeCancellation?.Cancel();
         _optionLifetimeCancellation?.Dispose();
         _optionLifetimeCancellation = null;
-        _ = ReleaseOptionGatewayAsync();
     }
 
     private async Task ReleaseOptionGatewayAsync()
@@ -143,6 +181,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         long generation,
         CancellationToken cancellationToken)
     {
+        using var diagnosticTask = _performance.TrackTask();
         var retryIndex = 0;
         var retryDelays = new[] { 2, 5, 15, 30, 60 };
 
@@ -153,6 +192,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             {
                 await EnsureOptionTargetAsync(generation, cancellationToken)
                     .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 PublishOptionSnapshots();
                 SaveOpenInterestCacheIfNeeded();
                 retryIndex = 0;
@@ -165,6 +205,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             }
             catch (IbOptionGatewayException exception)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                _performance.RecordError(exception.Code);
                 PublishOptionError(exception);
                 ReleaseOptionGatewayAfterFailure(exception.Code);
                 var seconds = retryDelays[Math.Min(retryIndex++, retryDelays.Length - 1)];
@@ -173,7 +215,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             }
             catch
             {
-                _ = ReleaseOptionGatewayAsync();
+                cancellationToken.ThrowIfCancellationRequested();
+                await ReleaseOptionGatewayAsync().ConfigureAwait(false);
                 PublishOptionError(new IbOptionGatewayException(
                     "INTERNAL", "IB 期权数据内部错误"));
                 await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken)
@@ -196,6 +239,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 "NO_CONTRACTS", "等待可识别的 NQ/MNQ 或 ES/MES 品种");
         }
 
+        var nowUtc = CurrentUtcTime();
+        if (nowUtc.Year < 1970) { SetOptionWaiting("等待有效 UTC 时钟"); return; }
+        var expiration = NyseTradingCalendar.ResolveTarget(nowUtc, profile.Ticker).TargetExpiration;
+        var targetChanged = TransitionOptionTarget(profile.Ticker, expiration, nowUtc);
+        lock (_optionDataSync)
+            if (_showOptionOpenInterest) RefreshOiConfirmationEpoch(nowUtc);
         var ratio = CurrentEffectiveMappingRatio;
         var futuresPrice = LatestChartPrice;
 
@@ -205,20 +254,25 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
         }
 
-        var nowUtc = CurrentUtcTime();
-        var expiration = NyseTradingCalendar
-            .ResolveTarget(nowUtc, profile.Ticker)
-            .TargetExpiration;
         var gateway = GetOrCreateOptionGateway();
         await gateway.ConnectAsync(cancellationToken).ConfigureAwait(false);
         var available = await gateway.GetAvailableStrikesAsync(
                 profile, expiration, cancellationToken)
             .ConfigureAwait(false);
         var mappedSpot = futuresPrice / ratio.Value;
-        var selected = OptionStrikeSelection.SelectCentered(
+        var knownTargetHours = _activeOptionTicker == profile.Ticker
+            && _activeOptionExpiration == expiration && _activeOptionContracts.Count > 0;
+        var needsFlowLines = _showOptionPremiumFlow && (!knownTargetHours
+            || IsInsideOptionFlowSubscriptionWindow(nowUtc, profile.Ticker, _activeOptionContracts));
+        var flowLevels = _optionGatewayLease!.SetFlowDemand(profile.Ticker,
+            needsFlowLines ? _optionStrikeLevels : 0, _ibOptionMarketDataLineBudget);
+        var requestedLevels = needsFlowLines ? flowLevels : _optionStrikeLevels;
+        if (requestedLevels == 0)
+            throw new IbOptionGatewayException("LINE_LIMIT", "共享预算不足以保留各标的 ATM");
+        var selected = OptionStrikeSelection.SelectCenteredCandidates(
             available,
             mappedSpot,
-            _optionStrikeLevels,
+            requestedLevels,
             out var candidateAtm);
         selected = OptionStrikeSelection.ApplySymmetricBudget(
             selected,
@@ -228,9 +282,6 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         if (selected.Count == 0)
             throw new IbOptionGatewayException("NO_CONTRACTS", "ATM 附近没有可用 0DTE 执行价");
 
-        var targetChanged = !string.Equals(_activeOptionTicker, profile.Ticker,
-                                StringComparison.OrdinalIgnoreCase)
-                            || _activeOptionExpiration != expiration;
         var atmChanged = candidateAtm != _activeOptionSelectionAtmStrike;
         var rollingMode = _showOptionPremiumFlow
                           && _optionFlowBucketMode == OptionFlowBucketMode.Rolling;
@@ -340,8 +391,6 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         long generation,
         CancellationToken cancellationToken)
     {
-        _optionSubscription?.Dispose();
-        _optionSubscription = null;
         var gateway = GetOrCreateOptionGateway();
         var available = await gateway.GetAvailableStrikesAsync(
                 profile, expiration, cancellationToken)
@@ -372,6 +421,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         if (generation != Interlocked.Read(ref _optionDataGeneration))
             return;
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (contracts.Length == 0)
             throw new IbOptionGatewayException("NO_CONTRACTS", "IB 未解析到可订阅的期权合约");
@@ -408,19 +458,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 _allTradeSamples.Clear();
                 _flowCoverageStartUtc = configuredUtc;
                 _optionOpenInterest.Clear();
+                _optionOiReceivedByContract.Clear();
+                _oiRevision++;
                 _optionOpenInterestReceivedUtc = DateTime.MinValue;
-                var cached = OptionOpenInterestCache.LoadSnapshot(
-                    OptionOpenInterestCache.GetDefaultDirectory(),
-                    profile.Ticker,
-                    expiration);
-
-                foreach (var item in cached.Values)
-                {
-                    _optionOpenInterest[item.Key] = item.Value;
-                }
-
-                if (cached.Values.Count > 0)
-                    _optionOpenInterestReceivedUtc = cached.ReceivedUtc;
             }
             else
             {
@@ -469,7 +509,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var pending = contracts.Where(contract =>
         {
             lock (_optionDataSync)
-                return !_optionOpenInterest.ContainsKey(contract.ConId);
+                return NeedsOiConfirmation(contract.ConId);
         })
             .OrderBy(contract => Math.Abs(contract.StrikeUsd - _activeAtmStrike))
             .ThenBy(static contract => contract.StrikeUsd)
@@ -485,9 +525,10 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
             void OnBatchUpdate(IbOptionMarketDataUpdate update)
             {
-                OnOptionMarketData(update);
+                if (cancellationToken.IsCancellationRequested) return;
+                OnScheduledOptionMarketData(update, cancellationToken);
 
-                if (update.OpenInterest.HasValue)
+                if (update.OpenInterest is >= 0)
                 {
                     lock (remaining)
                     {
@@ -526,9 +567,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     }
 
     private void OnOptionMarketData(IbOptionMarketDataUpdate update)
+        => OnScheduledOptionMarketData(update, default);
+
+    private void OnScheduledOptionMarketData(IbOptionMarketDataUpdate update, CancellationToken cancellationToken)
     {
+        using var diagnosticMeasurement = _performance.Measure(PerformanceMetric.Callback);
+        if (cancellationToken.IsCancellationRequested) return;
+        _performance.EventReceived();
         if (!string.IsNullOrWhiteSpace(update.ErrorCode))
         {
+            lock (_optionDataSync)
+                if (update.Contract.Ticker != _activeOptionTicker || update.Contract.Expiration != _activeOptionExpiration) return;
+            _performance.RecordError(update.ErrorCode);
             PublishOptionError(new IbOptionGatewayException(
                 update.ErrorCode,
                 update.ErrorMessage ?? "IB 期权行情订阅失败"));
@@ -537,6 +587,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         lock (_optionDataSync)
         {
+            if (cancellationToken.IsCancellationRequested) return;
             if (!string.Equals(update.Contract.Ticker, _activeOptionTicker,
                     StringComparison.OrdinalIgnoreCase)
                 || update.Contract.Expiration != _activeOptionExpiration)
@@ -546,14 +597,21 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
             _optionDataIsDelayed |= update.IsDelayed;
 
-            if (update.OpenInterest.HasValue && update.OpenInterest.Value >= 0)
+            if (update.OpenInterest.HasValue && update.OpenInterest.Value >= 0
+                && update.ReceivedUtc.Kind == DateTimeKind.Utc && update.ReceivedUtc <= DateTime.UtcNow
+                && (!_optionOiReceivedByContract.TryGetValue(update.Contract.ConId, out var priorReceived)
+                    || update.ReceivedUtc >= priorReceived))
             {
-                _optionOpenInterest[update.Contract.ConId] = update.OpenInterest.Value;
-
-                if (update.ReceivedUtc > _optionOpenInterestReceivedUtc)
-                    _optionOpenInterestReceivedUtc = update.ReceivedUtc;
-
-                _oiCacheDirty = true;
+                if (!_optionOpenInterest.TryGetValue(update.Contract.ConId, out var previousOi)
+                    || previousOi != update.OpenInterest.Value || NeedsOiConfirmation(update.Contract.ConId))
+                {
+                    _oiRevision++;
+                    _optionOpenInterest[update.Contract.ConId] = update.OpenInterest.Value;
+                    _optionOiReceivedByContract[update.Contract.ConId] = update.ReceivedUtc;
+                    if (update.ReceivedUtc > _optionOpenInterestReceivedUtc)
+                        _optionOpenInterestReceivedUtc = update.ReceivedUtc;
+                    _oiCacheDirty = true;
+                }
             }
 
             if (_optionFlowBucketMode == OptionFlowBucketMode.Rolling)
@@ -567,29 +625,33 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             }
             else
             {
-                if (update.RegularTrades.HasValue)
+                if (update.RegularTrades.HasValue && AcceptFixedSample(update.RegularTrades.Value, update.ReceivedUtc))
                     AddCumulativeSample(_regularTradeSamples, update.RegularTrades.Value);
-                if (update.AllTimeAndSales.HasValue)
+                if (update.AllTimeAndSales.HasValue && AcceptFixedSample(update.AllTimeAndSales.Value, update.ReceivedUtc))
                     AddCumulativeSample(_allTradeSamples, update.AllTimeAndSales.Value);
             }
         }
 
-        RequestRedraw();
+        // Raw samples are not rendered directly. The scheduled immutable snapshot
+        // publication triggers redraw; avoid a redundant redraw for every IB tick.
     }
 
     private static void AddCumulativeSample(
         Dictionary<long, List<OptionCumulativeSample>> destination,
         OptionCumulativeSample sample)
     {
+        if (!sample.HasValidCumulativeValue()) return;
         if (!destination.TryGetValue(sample.ConId, out var samples))
         {
             samples = new List<OptionCumulativeSample>();
             destination.Add(sample.ConId, samples);
         }
 
+        if (samples.Count > 0 && sample.SampleUtc < samples[^1].SampleUtc) return;
         if (samples.Count > 0
-            && (sample.SampleUtc < samples[^1].SampleUtc
-                || sample.TotalVolume < samples[^1].TotalVolume))
+            && (sample.TotalVolume < samples[^1].TotalVolume
+                || sample.Multiplier != samples[^1].Multiplier
+                || sample.CumulativePremium < samples[^1].CumulativePremium))
         {
             samples.Clear();
         }
@@ -600,15 +662,21 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             samples.Add(sample);
 
         var cutoff = sample.SampleUtc - TimeSpan.FromHours(2);
-        samples.RemoveAll(value => value.SampleUtc < cutoff);
+        var expired = OptionFlowAggregation.LowerBound(samples, cutoff);
+        if (expired > 0) samples.RemoveRange(0, expired);
     }
 
     private void PublishOptionSnapshots()
+        => PublishOptionSnapshotsAt(CurrentUtcTime());
+
+    // Explicit clock seam also used by deterministic offline publication benchmarks.
+    private void PublishOptionSnapshotsAt(DateTime nowUtc)
     {
+        using var diagnosticMeasurement = _performance.Measure(PerformanceMetric.Publish);
         IReadOnlyList<OptionContractDescriptor> contracts;
         IReadOnlyList<decimal> strikes;
-        Dictionary<long, long> oi;
-        Dictionary<long, List<OptionCumulativeSample>> samples;
+        OptionOpenInterestSnapshot? oiSnapshot = null;
+        OptionFlowSnapshot? flowSnapshot = null;
         string? ticker;
         DateOnly? expiration;
         decimal atm;
@@ -618,62 +686,43 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         lock (_optionDataSync)
         {
-            contracts = _activeOptionContracts.ToArray();
-            strikes = _activeOptionStrikes.ToArray();
-            oi = new Dictionary<long, long>(_optionOpenInterest);
+            if (_showOptionOpenInterest) RefreshOiConfirmationEpoch(nowUtc);
+            contracts = _activeOptionContracts;
+            strikes = _activeOptionStrikes;
             var source = _optionFlowTradeScope == OptionFlowTradeScope.RegularTrades
                 ? _regularTradeSamples
                 : _allTradeSamples;
-            samples = source.ToDictionary(
-                static item => item.Key,
-                static item => item.Value.ToList());
             ticker = _activeOptionTicker;
             expiration = _activeOptionExpiration;
             atm = _activeAtmStrike;
             coverageStart = _flowCoverageStartUtc;
             oiReceivedUtc = _optionOpenInterestReceivedUtc;
             delayed = _optionDataIsDelayed;
+            if (ticker != null && expiration.HasValue && strikes.Count > 0)
+            {
+                if (_showOptionOpenInterest)
+                    oiSnapshot = GetPublishedOiSnapshot(ticker, expiration.Value, atm, strikes, contracts, oiReceivedUtc);
+                if (_showOptionPremiumFlow)
+                    flowSnapshot = CreateFlowSnapshot(ticker, expiration.Value, atm, strikes, contracts,
+                        source, nowUtc, coverageStart, delayed);
+            }
+            if (_performance.Enabled)
+                _performance.SetCacheCounts(
+                    _regularTradeSamples.Values.Sum(static values => (long)values.Count)
+                    + _allTradeSamples.Values.Sum(static values => (long)values.Count)
+                    + _rollingFlow.CachedSampleCount, _optionOpenInterest.Count);
         }
 
         if (ticker == null || !expiration.HasValue || strikes.Count == 0)
             return;
 
-        var nowUtc = CurrentUtcTime();
-
-        if (_showOptionOpenInterest)
+        if (oiSnapshot != null) SetOptionOpenInterestSnapshot(oiSnapshot);
+        if (flowSnapshot != null) SetOptionFlowSnapshot(flowSnapshot);
+        var activeLines = GetOptionActiveLineCount();
+        if (activeLines != _publishedOptionLineCount)
         {
-            var oiRows = CreateRows(strikes, contracts, oi, null);
-            var populated = contracts.Count(contract => oi.ContainsKey(contract.ConId));
-            var coverage = OptionContractCoverage.Calculate(strikes, contracts);
-            var status = populated == 0
-                ? OptionDataStatus.WaitingOpenInterest
-                : populated == contracts.Count && coverage.IsComplete
-                    ? OptionDataStatus.Daily
-                    : OptionDataStatus.Partial;
-            SetOptionOpenInterestSnapshot(new OptionOpenInterestSnapshot(
-                ticker,
-                expiration,
-                atm,
-                oiRows,
-                status,
-                populated > 0 ? oiReceivedUtc : DateTime.MinValue,
-                $"OI {populated}/{contracts.Count}；合约 {coverage.ResolvedContractCount}/{coverage.ExpectedContractCount}",
-                _optionStrikeLevels,
-                coverage.ActiveStrikeCount));
-        }
-
-        if (_showOptionPremiumFlow)
-        {
-            SetOptionFlowSnapshot(CreateFlowSnapshot(
-                ticker,
-                expiration.Value,
-                atm,
-                strikes,
-                contracts,
-                samples,
-                nowUtc,
-                coverageStart,
-                delayed));
+            _publishedOptionLineCount = activeLines;
+            RequestRedraw();
         }
     }
 
@@ -695,13 +744,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     _optionFlowIntervalMinutes, _optionFlowTradeScope, _optionStrikeLevels, delayed);
         }
 
-        var segments = contracts.Count == 0
-            ? Array.Empty<OptionTradingSegment>()
-            : IbTradingHoursParser.Parse(
-                    contracts[0].TradingHours,
-                    contracts[0].TradingTimeZoneId,
-                    string.Equals(ticker, "SPX", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+        var segments = GetCachedFlowSegments(ticker, contracts);
         var segment = segments.LastOrDefault(value =>
             value.Contains(nowUtc) || value.EndUtc <= nowUtc);
         DateTime? startUtc = null;
@@ -725,6 +768,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     && current.IntervalMinutes == _optionFlowIntervalMinutes
                     && current.BucketEndUtc >= bucket.Value.EndUtc)
                 {
+                    if (current.Status is OptionDataStatus.Live or OptionDataStatus.Closed or OptionDataStatus.Delayed or OptionDataStatus.Frozen)
+                    {
+                        var state = delayed ? OptionDataStatus.Delayed
+                            : segment.Contains(nowUtc) ? OptionDataStatus.Live : OptionDataStatus.Closed;
+                        return current.Status == state ? current : current with { Status = state };
+                    }
                     return current;
                 }
 
@@ -735,7 +784,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     startUtc.Value,
                     endUtc.Value,
                     allowPartial: true,
-                    values);
+                    values,
+                    segment.StartUtc > coverageStartUtc ? segment.StartUtc : coverageStartUtc);
             }
         }
 
@@ -746,13 +796,16 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                                      && values.Count == 0;
         var status = delayed
             ? OptionDataStatus.Delayed
+            : !isOpen ? OptionDataStatus.Closed
             : !startUtc.HasValue || !endUtc.HasValue || isInitialPartialBucket
                 ? OptionDataStatus.Warming
                 : isOpen
                     ? OptionDataStatus.Live
                     : OptionDataStatus.Closed;
         var partialCount = values.Count(static item => item.Value.IsPartial);
-        var message = status == OptionDataStatus.Warming
+        var message = status == OptionDataStatus.Closed && !startUtc.HasValue
+            ? "非交易区段；等待下一开放区段"
+            : status == OptionDataStatus.Warming
             ? "等待第一个完整时间桶"
             : $"{_optionFlowIntervalMinutes}m 已完成桶；数据 {values.Count}/{contracts.Count}"
               + (partialCount > 0 ? $"；部分 {partialCount}" : string.Empty);
@@ -778,7 +831,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         DateTime startUtc,
         DateTime endUtc,
         bool allowPartial,
-        Dictionary<long, OptionIntervalValue> destination)
+        Dictionary<long, OptionIntervalValue> destination,
+        DateTime earliestBaselineUtc)
     {
         foreach (var item in samples)
         {
@@ -787,7 +841,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     startUtc,
                     endUtc,
                     allowPartial,
-                    out var value))
+                    out var value, earliestBaselineUtc))
             {
                 destination[item.Key] = value;
             }
@@ -974,8 +1028,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         if (errorCode is "NO_PERMISSION" or "LINE_LIMIT" or "NO_CONTRACTS")
             return;
 
-        lock (_optionDataSync)
-            _rollingFlow.Suspend(CurrentUtcTime());
+        SuspendOptionObservation(CurrentUtcTime());
         _optionSubscription?.Dispose();
         _optionSubscription = null;
         _ = ReleaseOptionGatewayAsync();
@@ -1018,7 +1071,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     {
         lock (_optionDataSync)
             return _activeOptionContracts.Any(contract =>
-                !_optionOpenInterest.ContainsKey(contract.ConId));
+                NeedsOiConfirmation(contract.ConId));
     }
 
     private void ScheduleNextOiRetry(DateTime nowUtc)
@@ -1041,55 +1094,53 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     }
 
     private static DateTime CalculateNextOiRetryUtc(DateTime nowUtc)
-    {
-        var eastern = UsMarketClock.ToEastern(nowUtc);
-        var date = eastern.Date;
-        var candidates = new[]
-        {
-            date.AddHours(8).AddMinutes(30),
-            date.AddHours(9).AddMinutes(15),
-            date.AddHours(9).AddMinutes(35)
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (candidate > eastern)
-                return NyseTradingCalendar.EasternToUtc(candidate);
-        }
-
-        return DateTime.MaxValue;
-    }
+        => OptionOiFreshnessPolicy.NextRetryUtc(nowUtc);
 
     private void SaveOpenInterestCacheIfNeeded()
     {
         string? ticker;
         DateOnly? expiration;
-        Dictionary<long, long> values;
-        DateTime receivedUtc;
+        Dictionary<long, OptionOiCacheEntry> values;
+        var nowUtc = CurrentUtcTime();
 
         lock (_optionDataSync)
         {
-            if (!_oiCacheDirty || _activeOptionTicker == null || !_activeOptionExpiration.HasValue)
+            if (!_oiCacheDirty || nowUtc.Year < 1970 || nowUtc < _nextOiCacheSaveUtc
+                || _activeOptionTicker == null || !_activeOptionExpiration.HasValue)
                 return;
 
             _oiCacheDirty = false;
             ticker = _activeOptionTicker;
             expiration = _activeOptionExpiration;
-            values = new Dictionary<long, long>(_optionOpenInterest);
-            receivedUtc = _optionOpenInterestReceivedUtc;
+            values = _optionOiReceivedByContract.Where(item => _optionOpenInterest.ContainsKey(item.Key))
+                .ToDictionary(static item => item.Key, item => new OptionOiCacheEntry(_optionOpenInterest[item.Key], item.Value));
         }
 
         try
         {
-            OptionOpenInterestCache.Save(
+            OptionOpenInterestCache.SaveEntries(
                 OptionOpenInterestCache.GetDefaultDirectory(),
                 ticker,
                 expiration.Value,
-                receivedUtc == DateTime.MinValue ? CurrentUtcTime() : receivedUtc,
-                values);
+                values, nowUtc);
+            lock (_optionDataSync)
+            {
+                if (_oiCacheWriteFailed) _oiRevision++;
+                _oiCacheWriteFailed = false;
+            }
         }
         catch
         {
+            lock (_optionDataSync)
+            {
+                if (_activeOptionTicker == ticker && _activeOptionExpiration == expiration)
+                {
+                    _oiCacheDirty = true;
+                    _nextOiCacheSaveUtc = nowUtc.AddSeconds(30);
+                    if (!_oiCacheWriteFailed) _oiRevision++;
+                    _oiCacheWriteFailed = true;
+                }
+            }
         }
     }
 
@@ -1128,7 +1179,6 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             SetOptionOpenInterestSnapshot(current with
             {
                 Status = state,
-                ReceivedUtc = nowUtc,
                 Message = exception.Message
             });
         }
@@ -1139,7 +1189,6 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             SetOptionFlowSnapshot(current with
             {
                 Status = state,
-                ReceivedUtc = nowUtc,
                 Message = exception.Message
             });
         }
@@ -1147,12 +1196,14 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
     private void SetOptionOpenInterestSnapshot(OptionOpenInterestSnapshot snapshot)
     {
+        if (ReferenceEquals(Volatile.Read(ref _optionOpenInterestSnapshot), snapshot)) return;
         Volatile.Write(ref _optionOpenInterestSnapshot, snapshot);
         RequestRedraw();
     }
 
     private void SetOptionFlowSnapshot(OptionFlowSnapshot snapshot)
     {
+        if (ReferenceEquals(Volatile.Read(ref _optionFlowSnapshot), snapshot)) return;
         Volatile.Write(ref _optionFlowSnapshot, snapshot);
         RequestRedraw();
     }

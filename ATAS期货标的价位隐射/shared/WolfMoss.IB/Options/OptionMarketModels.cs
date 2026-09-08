@@ -1,3 +1,4 @@
+// Source-shared module: compiled privately into each consuming plugin.
 namespace WolfMoss.ATAS.PriceMapping.Core;
 
 public enum OptionFlowBucketMode
@@ -155,6 +156,10 @@ public sealed record OptionOpenInterestSnapshot(
     int RequestedStrikeCount,
     int ActiveStrikeCount)
 {
+    // OI-only metadata: do not enlarge every hot-path Flow row for these timestamps.
+    public IReadOnlyDictionary<(decimal Strike, OptionRight Right), DateTime?> ReceivedByStrike { get; init; }
+        = new Dictionary<(decimal, OptionRight), DateTime?>();
+
     public static OptionOpenInterestSnapshot Disabled(DateTime utcNow)
         => new(null, null, null, Array.Empty<OptionStrikeRow>(),
             OptionDataStatus.Disabled, utcNow, "Option OI 已关闭", 0, 0);
@@ -213,6 +218,13 @@ public readonly record struct OptionCumulativeSample(
 {
     public decimal CumulativePremium => Vwap * TotalVolume * Multiplier;
 
+    public bool HasValidCumulativeValue()
+    {
+        if (ConId <= 0 || TotalVolume < 0 || Vwap < 0 || Multiplier <= 0) return false;
+        try { _ = CumulativePremium; return true; }
+        catch (OverflowException) { return false; }
+    }
+
     public bool TryGetLastTradeValue(out OptionIntervalValue value)
     {
         value = OptionIntervalValue.Zero;
@@ -224,9 +236,12 @@ public readonly record struct OptionCumulativeSample(
             return false;
         }
 
+        decimal premium;
+        try { premium = LastTradePrice.Value * LastTradeSize.Value * Multiplier; }
+        catch (OverflowException) { return false; }
         value = new OptionIntervalValue(
             LastTradeSize.Value,
-            LastTradePrice.Value * LastTradeSize.Value * Multiplier,
+            premium,
             SampleUtc,
             true);
         return true;

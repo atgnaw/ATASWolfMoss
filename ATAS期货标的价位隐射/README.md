@@ -19,6 +19,39 @@
 - 普通版 `FuturesReferencePriceAxis` v1.1.0：保持原有映射功能和指标类型不变。
 - Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.2.0：在映射轴右侧依次增加同宽的 Nightwatch Dealer Heatmap、Dealer GEX、IBKR Option OI 和 Option Premium/Volume。
 
+## 性能诊断与阶段性优化
+
+Pro 新增 `Diagnostics / 诊断 → Performance diagnostics / 性能诊断`，默认 `Off`。
+`Summary` 在状态面板末尾显示每秒汇总，`Record` 同时在
+`%LOCALAPPDATA%\WolfMoss\FuturesReferencePriceAxis\diagnostics` 后台保存 JSON／CSV。
+`ShowUpdateStatus` 关闭只隐藏摘要，不停止 Record。队列积压和行情缺口目前尚不可测，显示 N/A。
+记录不含 Key、账户或原始行情；正常关闭刷新尾部，单文件 10 MiB、目录 100 MiB、最多保留 7 天。
+
+详细字段、离线基线、测试限制及验收步骤见 [第一批报告](docs/performance/batch-1-report.md)。
+  后续性能优化与架构批次需用户分别确认；本批没有修改 Flow 统计逻辑。
+
+第二批已加入 IB 后台限速发送、连接池安全交接、差量换档、共享预算与回调列表复用。
+具体范围、离线证据、限制和两版对比方法见 [第二批报告](docs/performance/batch-2-report.md)。
+有 IB 连接时 PERF“受监测循环”增加一个发送循环属于正常现象。
+
+第三批已优化 Flow 聚合、快照发布和期权列显示缓存；固定/滚动桶规则保持兼容。
+前后 48 组实际发布基准、72 项回归测试及验收限制见 [第三批报告](docs/performance/batch-3-report.md)。
+
+第四批已补齐 OI 逐合约日确认、原子合并缓存及交易区段／断线基线保护。
+79 项回归、性能复核和实盘验收说明见 [第四批报告](docs/performance/batch-4-report.md)。
+
+第五批已抽离可源内编译的 IB 模块，隔离各插件的 SDK／回调／连接身份，
+并统一显示列注册、布局、生命周期及状态缓存入口。普通版 1.1.0、Pro 2.2.0 保持不变。
+85 项回归、基准及验收说明见 [第五批报告](docs/performance/batch-5-report.md)，
+其他工程接入方法见 [IB 源码复用指南](shared/WolfMoss.IB/README.md)。
+多插件仍共享账户额度，需不同 Client ID 和分别合理设置预算；尚未实现历史查询、下单或数据库。
+
+第六批已完成标准行情事件、可选后台记录边界及历史查询契约，并补充收尾文档。
+默认不录制行情，不创建数据库；诊断 Record 的含义不变。92 组离线测试通过。
+见 [第六批与最终验收报告](docs/performance/batch-6-report.md)、
+[历史接口指南](shared/WolfMoss.MarketData/README.md) 和 [最终验收清单](docs/final-acceptance.md)。
+实盘共存、图形及完整交易日观察仍待人工验收；报告也列出原计划尚未实现的优化项。
+
 ## 编译
 
 本项目默认使用：
@@ -177,8 +210,13 @@ Option Premium/Volume”。两个 IBKR 列默认关闭，可独立启用；Night
 
 QQQ/NQ 只统计 RTH；SPX/ES 按 IB 合约的 `trading_hours` 与 `time_zone_id`
 统计 GTH 和 RTH。Flow 仅在交易区段前 2 分钟至结束后 1 分钟保留长期订阅；
-OI-only 最多以 8 个合约分批临时订阅。OI 日缓存位于
+OI-only 按共享行情线预算分配临时订阅，缺失项有限重试；不固定限制为每批 8 个。
+OI 日缓存位于
 `%LOCALAPPDATA%\WolfMoss\FuturesReferencePriceAxis\option-oi`。
+
+OI 按每个合约的 IB 接收时间判断确认周期：纽约开盘日 08:30 后重确认旧值，
+已确认项不按分钟重取。旧值保留并显示“旧值待确认”；此策略不保证清算所发布日期。
+悬停显示当前 Call／Put 自身的接收时间，多图表缓存按合约原子合并。
 
 Call 在行上半部显示为绿色，Put 在下半部显示为红色。柱长以当前列全部可见
 Call/Put 的最大值共享归一化；无事件显示 `·`，缺失数据或缺少可用基线显示 `?`，

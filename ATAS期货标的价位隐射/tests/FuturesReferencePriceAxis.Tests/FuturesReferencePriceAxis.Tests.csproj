@@ -13,6 +13,14 @@
     <Compile Include="Program.cs" />
     <Compile Include="OptionFeatureTests.cs" />
     <Compile Include="OptionRollingFlowTests.cs" />
+    <Compile Include="PerformanceDiagnosticTests.cs" />
+    <Compile Include="PerformanceBaseline.cs" />
+    <Compile Include="IbCoordinationTests.cs" />
+    <Compile Include="ModuleReuseTests.cs" />
+    <Compile Include="MarketHistoryTests.cs" />
+    <Compile Include="OptionOptimizationTests.cs" />
+    <Compile Include="OptionBoundaryTests.cs" />
+    <Compile Include="ReferenceRollingFlowState.cs" />
     <Compile Include="..\..\src\FuturesReferencePriceAxis\Core\*.cs"
              Link="Core\%(Filename)%(Extension)" />
     <Compile Include="..\..\src\FuturesReferencePriceAxis.DealerHeatmap\Core\*.cs"
@@ -22,8 +30,16 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\FuturesReferencePriceAxis\FuturesReferencePriceAxis.csproj"
                       ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\IbModule.ConsumerA\IbModule.ConsumerA.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\IbModule.ConsumerB\IbModule.ConsumerB.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\FuturesReferencePriceAxis.DealerHeatmap\FuturesReferencePriceAxis.DealerHeatmap.csproj"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+  </ItemGroup>
+
+  <Import Project="..\..\shared\WolfMoss.IB\WolfMoss.IB.props" />
 
 </Project>

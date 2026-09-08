@@ -7,9 +7,9 @@ public sealed class OptionRollingFlowState
     {
         public DateTime StartUtc { get; } = startUtc;
         public DateTime? EndUtc { get; set; }
-        public List<OptionCumulativeSample> Regular { get; } = new();
-        public List<OptionCumulativeSample> All { get; } = new();
-        public List<OptionCumulativeSample> Samples(OptionFlowTradeScope scope)
+        public OptionSampleBuffer Regular { get; } = new();
+        public OptionSampleBuffer All { get; } = new();
+        public OptionSampleBuffer Samples(OptionFlowTradeScope scope)
             => scope == OptionFlowTradeScope.RegularTrades ? Regular : All;
     }
 
@@ -30,6 +30,10 @@ public sealed class OptionRollingFlowState
     private bool _suspended;
 
     public bool HasLadder => _series.Values.Any(static entry => entry.Active);
+
+    // Read only by the existing data owner; diagnostics never takes that lock from rendering.
+    public long CachedSampleCount => _series.Values.Sum(static entry =>
+        entry.Runs.Sum(static run => (long)run.Regular.Count + run.All.Count));
 
     public bool IsLadderLocked(DateTime nowUtc)
         => _segment.HasValue && _segment.Value.Contains(nowUtc) && nowUtc < _lockedUntilUtc;
@@ -146,7 +150,7 @@ public sealed class OptionRollingFlowState
 
     public bool Add(OptionCumulativeSample sample, OptionFlowTradeScope scope, DateTime receivedUtc)
     {
-        if (sample.TotalVolume < 0 || sample.Vwap < 0m || sample.Multiplier <= 0m)
+        if (!sample.HasValidCumulativeValue())
             return false;
         AdvanceClock(receivedUtc);
         if (!_segment.HasValue || !_segment.Value.Contains(sample.SampleUtc)
@@ -201,8 +205,8 @@ public sealed class OptionRollingFlowState
                 results[entry.Contract.ConId] = Calculate(entry, scope, startUtc.Value, endUtc.Value,
                     endUtc - startUtc < TimeSpan.FromMinutes(minutes));
                 if (!entry.Active && !entry.Runs.Any(run =>
-                        run.Regular.Any(sample => sample.SampleUtc >= startUtc.Value)
-                        || run.All.Any(sample => sample.SampleUtc >= startUtc.Value)))
+                        (run.Regular.Count > 0 && run.Regular[^1].SampleUtc >= startUtc.Value)
+                        || (run.All.Count > 0 && run.All[^1].SampleUtc >= startUtc.Value)))
                 {
                     _series.Remove(entry.Contract.ConId);
                     results.Remove(entry.Contract.ConId);
@@ -286,16 +290,16 @@ public sealed class OptionRollingFlowState
         {
             var samples = run.Samples(scope);
             var runEnd = run.EndUtc.HasValue ? Min(endUtc, run.EndUtc.Value) : endUtc;
-            var inside = samples.Where(sample => sample.SampleUtc >= startUtc
-                && sample.SampleUtc < runEnd).ToArray();
-            if (inside.Length == 0)
+            var first = OptionFlowAggregation.LowerBound(samples, startUtc);
+            var last = OptionFlowAggregation.LowerBound(samples, runEnd) - 1;
+            if (first > last)
                 continue;
             hasEvents = true;
             var calculated = OptionFlowAggregation.TryCalculateBucketValue(
                 samples, startUtc, runEnd, allowPartial: true, out var value);
-            if (!calculated && !samples.Any(sample => sample.SampleUtc < startUtc)
-                && inside.Length >= 2
-                && OptionFlowAggregation.TryCalculateDelta(inside[0], inside[^1], out value))
+            if (!calculated && first == 0
+                && last > first
+                && OptionFlowAggregation.TryCalculateDelta(samples[first], samples[last], out value))
             {
                 value = value with { IsPartial = true };
                 calculated = true;
@@ -307,11 +311,15 @@ public sealed class OptionRollingFlowState
             }
             value = value with { IsPartial = value.IsPartial || shortWindow
                 || run.StartUtc > startUtc || runEnd < endUtc };
-            total = total.HasValue
-                ? new OptionIntervalValue(checked(total.Value.Volume + value.Volume),
-                    total.Value.Premium + value.Premium,
-                    Min(total.Value.ObservedStartUtc!.Value, value.ObservedStartUtc!.Value), true)
-                : value;
+            try
+            {
+                total = total.HasValue
+                    ? new OptionIntervalValue(checked(total.Value.Volume + value.Volume),
+                        total.Value.Premium + value.Premium,
+                        Min(total.Value.ObservedStartUtc!.Value, value.ObservedStartUtc!.Value), true)
+                    : value;
+            }
+            catch (OverflowException) { return (null, OptionFlowCoverage.NoData); }
         }
         if (total.HasValue)
         {
@@ -331,13 +339,10 @@ public sealed class OptionRollingFlowState
         }
     }
 
-    private static void TrimSamples(List<OptionCumulativeSample> samples, DateTime startUtc)
+    private static void TrimSamples(OptionSampleBuffer samples, DateTime startUtc)
     {
-        var index = 0;
-        while (index + 1 < samples.Count && samples[index + 1].SampleUtc < startUtc)
-            index++;
-        if (index > 0)
-            samples.RemoveRange(0, index);
+        var count = Math.Max(0, OptionFlowAggregation.LowerBound(samples, startUtc) - 1);
+        samples.RemovePrefix(count);
     }
 
     private static void CloseRun(ContractSeries entry, DateTime nowUtc)

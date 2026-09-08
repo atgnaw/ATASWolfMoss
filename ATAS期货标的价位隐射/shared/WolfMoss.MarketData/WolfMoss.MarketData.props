@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)*.cs" Link="WolfMoss.MarketData\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

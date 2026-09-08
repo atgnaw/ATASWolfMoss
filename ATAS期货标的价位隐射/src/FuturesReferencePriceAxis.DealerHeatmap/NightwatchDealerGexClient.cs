@@ -67,6 +67,6 @@ internal static class NightwatchDealerGexClient
                         innerException),
                 cancellationToken)
             .ConfigureAwait(false);
-        return DealerGexParser.ParseSnapshot(json.Span, symbol);
+        return NightwatchEventCapture.DealerGex(DealerGexParser.ParseSnapshot(json.Span, symbol), DateTime.UtcNow);
     }
 }

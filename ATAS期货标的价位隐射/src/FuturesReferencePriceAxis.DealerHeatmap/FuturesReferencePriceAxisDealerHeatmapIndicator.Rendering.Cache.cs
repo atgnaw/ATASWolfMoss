@@ -1,57 +1,42 @@
 namespace WolfMoss.ATAS.PriceMapping;
-
 using WolfMoss.ATAS.PriceMapping.Core;
 
 public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 {
     private readonly DealerRenderMetricsCache _dealerRenderMetricsCache = new();
-    private DealerHeatmapSnapshot? _cachedStatusHeatmapSnapshot;
-    private DealerGexSnapshot? _cachedStatusDealerGexSnapshot;
+    private object?[]? _statusSnapshots;
+    private object?[]? _cachedStatusSnapshots;
     private DealerColumnVisibility _cachedStatusVisibility = (DealerColumnVisibility)(-1);
     private decimal _cachedStatusUtcOffset = decimal.MinValue;
+    private int _cachedStatusHeight, _cachedStatusActiveLines, _cachedStatusBudget;
     private IReadOnlyList<string> _cachedEditionStatusLines = Array.Empty<string>();
 
-    private DealerColumnVisibility VisibleDealerColumns
-        => DealerColumnPlanner.FromToggles(
-            _showDealerHeatmap,
-            _showDealerGex,
-            _showOptionOpenInterest,
-            _showOptionPremiumFlow);
-
-    private bool TryGetCachedEditionStatusLines(
-        DealerColumnVisibility visibility,
-        DealerHeatmapSnapshot? heatmapSnapshot,
-        DealerGexSnapshot? dealerGexSnapshot,
-        out IReadOnlyList<string> lines)
+    private bool TryGetCachedEditionStatusLines(DealerColumnVisibility visibility, object?[] snapshots,
+        string[] performanceLines, int height, int activeLines, out IReadOnlyList<string> lines)
     {
-        var optionColumns = DealerColumnVisibility.OptionOpenInterest
-                            | DealerColumnVisibility.OptionPremiumFlow;
-
-        if ((visibility & optionColumns) == 0
-            && _cachedStatusVisibility == visibility
+        if (ReferenceEquals(_cachedPerformanceLines, performanceLines)
+            && _cachedStatusHeight == height && _cachedStatusActiveLines == activeLines
+            && _cachedStatusBudget == _ibOptionMarketDataLineBudget && _cachedStatusVisibility == visibility
             && _cachedStatusUtcOffset == ConfiguredUiUtcOffsetHours
-            && ReferenceEquals(_cachedStatusHeatmapSnapshot, heatmapSnapshot)
-            && ReferenceEquals(_cachedStatusDealerGexSnapshot, dealerGexSnapshot))
+            && _cachedStatusSnapshots is { } previous && previous.Length == snapshots.Length)
         {
-            lines = _cachedEditionStatusLines;
-            return true;
+            var same = true;
+            for (var i = 0; i < previous.Length; i++) if (!ReferenceEquals(previous[i], snapshots[i])) { same = false; break; }
+            if (same) { lines = _cachedEditionStatusLines; return true; }
         }
-
         lines = Array.Empty<string>();
         return false;
     }
 
-    private IReadOnlyList<string> CacheEditionStatusLines(
-        DealerColumnVisibility visibility,
-        DealerHeatmapSnapshot? heatmapSnapshot,
-        DealerGexSnapshot? dealerGexSnapshot,
-        List<string> lines)
+    private IReadOnlyList<string> CacheEditionStatusLines(DealerColumnVisibility visibility, object?[] snapshots,
+        int height, int activeLines, List<string> lines, string[] performanceLines)
     {
         _cachedStatusVisibility = visibility;
+        _cachedStatusSnapshots = (object?[])snapshots.Clone(); // Clone only when data actually changes.
+        _cachedStatusHeight = height; _cachedStatusActiveLines = activeLines;
+        _cachedStatusBudget = _ibOptionMarketDataLineBudget;
+        _cachedPerformanceLines = performanceLines;
         _cachedStatusUtcOffset = ConfiguredUiUtcOffsetHours;
-        _cachedStatusHeatmapSnapshot = heatmapSnapshot;
-        _cachedStatusDealerGexSnapshot = dealerGexSnapshot;
-        _cachedEditionStatusLines = lines.ToArray();
-        return _cachedEditionStatusLines;
+        return _cachedEditionStatusLines = lines.ToArray();
     }
 }

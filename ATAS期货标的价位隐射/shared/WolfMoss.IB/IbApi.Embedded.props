@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup>
+    <IBApiSourceDir Condition="'$(IBApiSourceDir)' == ''">C:\TWS API\source\CSharpClient\client</IBApiSourceDir>
+    <IBApiAssemblyPath>$(IBApiSourceDir)\bin\Release\net8.0\CSharpAPI.dll</IBApiAssemblyPath>
+    <IBApiSourceAvailable Condition="Exists('$(IBApiSourceDir)\EClientSocket.cs') and Exists('$(IBApiSourceDir)\EWrapper.cs') and Exists('$(IBApiSourceDir)\Contract.cs') and Exists('$(IBApiAssemblyPath)')">true</IBApiSourceAvailable>
+    <IBApiSourceAvailable Condition="'$(IBApiSourceAvailable)' == ''">false</IBApiSourceAvailable>
+    <RequireIbApiSource Condition="'$(RequireIbApiSource)' == '' and '$(Configuration)' == 'Release'">true</RequireIbApiSource>
+    <RequireIbApiSource Condition="'$(RequireIbApiSource)' == ''">false</RequireIbApiSource>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(IBApiAssemblyPath)" Condition="'$(IBApiSourceAvailable)' == 'true'" LogicalName="EmbeddedDependencies.CSharpAPI.dll" />
+    <EmbeddedResource Include="$(PkgGoogle_Protobuf)\lib\net5.0\Google.Protobuf.dll" Condition="'$(IBApiSourceAvailable)' == 'true'" LogicalName="EmbeddedDependencies.Google.Protobuf.dll" />
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES-IBKR.txt" LogicalName="ThirdPartyNotices.IBKR.txt" />
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES-GOOGLE-PROTOBUF.txt" LogicalName="ThirdPartyNotices.GoogleProtobuf.txt" />
+    <PackageReference Include="Google.Protobuf" Version="3.29.5" GeneratePathProperty="true" PrivateAssets="all" ExcludeAssets="all" Condition="'$(IBApiSourceAvailable)' == 'true'" />
+  </ItemGroup>
+  <Target Name="ValidateIbApiSource" BeforeTargets="CoreCompile" Condition="'$(RequireIbApiSource)' == 'true' and '$(IBApiSourceAvailable)' != 'true'">
+    <Error Text="Install official IB TWS API 10.45 C# source and net8.0 CSharpAPI.dll in C:\TWS API, or pass -p:IBApiSourceDir=... ." />
+  </Target>
+</Project>

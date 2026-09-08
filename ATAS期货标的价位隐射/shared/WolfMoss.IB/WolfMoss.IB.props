@@ -1,0 +1,13 @@
+<Project>
+  <!-- Source sharing only: no runtime business DLL and no ATAS reference. -->
+  <PropertyGroup>
+    <WolfMossIbIncludeOptions Condition="'$(WolfMossIbIncludeOptions)' == ''">true</WolfMossIbIncludeOptions>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Transport\*.cs" Link="WolfMoss.IB\Transport\%(Filename)%(Extension)" />
+    <Compile Include="$(MSBuildThisFileDirectory)Options\*.cs" Condition="'$(WolfMossIbIncludeOptions)' == 'true'"
+             Link="WolfMoss.IB\Options\%(Filename)%(Extension)" />
+  </ItemGroup>
+  <Import Project="$(MSBuildThisFileDirectory)IbApi.Embedded.props" />
+  <Import Project="$(MSBuildThisFileDirectory)..\WolfMoss.MarketData\WolfMoss.MarketData.props" />
+</Project>

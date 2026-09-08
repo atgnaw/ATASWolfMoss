@@ -7,6 +7,18 @@ using System.Net.Http.Headers;
 
 using WolfMoss.ATAS.PriceMapping.Core;
 
+if (args.Contains("--publication-baseline", StringComparer.OrdinalIgnoreCase))
+{
+    PerformanceBaseline.Run(publication: true);
+    return;
+}
+
+if (args.Contains("--performance-baseline", StringComparer.OrdinalIgnoreCase))
+{
+    PerformanceBaseline.Run();
+    return;
+}
+
 if (args.Contains("--live-ib-options", StringComparer.OrdinalIgnoreCase))
 {
     await RunLiveIbOptionCheck(args);
@@ -95,10 +107,56 @@ var tests = new (string Name, Action Run)[]
     ("Dealer render metrics cache", TestDealerRenderMetricsCache),
     ("Dealer GEX session states", TestDealerGexSessionStates),
     ("Dealer GEX request identity and shared Retry-After", TestDealerGexRequestPolicy),
-    ("Standard and Pro assembly compatibility", TestEditionAssemblies)
+    ("Standard and Pro assembly compatibility", TestEditionAssemblies),
+    ("Performance histogram, expiry and disabled overhead", PerformanceDiagnosticTests.WindowAndOff),
+    ("Optimized bucket lookup vs linear reference", OptionOptimizationTests.BinaryAggregation),
+    ("Rolling ring buffer wrap, trim and reset", OptionOptimizationTests.RingBuffer),
+    ("Rolling differential replay vs pre-optimization implementation", OptionOptimizationTests.RollingDifferential),
+    ("Option render data cache and invalidation", OptionOptimizationTests.RenderCache),
+    ("Actual snapshot publication and status cache invalidation", OptionOptimizationTests.PublicationAndStatus),
+    ("Fixed cache state transitions and no-copy publication", OptionOptimizationTests.PublicationBoundariesAndAllocations),
+    ("OI confirmation epochs and holiday retries", OptionBoundaryTests.Freshness),
+    ("OI cache schema, freshness and bounded validation", OptionBoundaryTests.CacheValidation),
+    ("OI atomic concurrent merge and writer exclusion", OptionBoundaryTests.CacheMerge),
+    ("IB split sessions, DST and strict timezone handling", OptionBoundaryTests.TradingSegments),
+    ("Fixed baseline boundaries and numeric safety", OptionBoundaryTests.FixedBaselines),
+    ("Actual OI freshness, error time and target rollover", OptionBoundaryTests.ActualOiAndTarget),
+    ("Actual fixed reception, gap and out-of-order boundaries", OptionBoundaryTests.ActualFixedReception),
+    ("IB asynchronous pacing, bounded queue and cancellation", IbCoordinationTests.Dispatcher),
+    ("IB shared discovery and isolated cancellation", IbCoordinationTests.SingleFlight),
+    ("IB shared subscriptions, edge-only moves and lock-free status", IbCoordinationTests.Subscriptions),
+    ("IB generic tick demands and budget rejection", IbCoordinationTests.CancellationAndDemands),
+    ("IB connection pool concurrent ownership and retirement", IbCoordinationTests.Pool),
+    ("IB fair per-ticker line budget", IbCoordinationTests.FairBudget),
+    ("IB callback fanout allocation and release", IbCoordinationTests.CallbackAllocation),
+    ("IB actual indicator rapid enable/disable lifecycle", IbCoordinationTests.IndicatorRapidSwitch),
+    ("IB queued cancellation and failed-send retirement", IbCoordinationTests.PendingCancellationAndFailure),
+    ("Performance shared rates and task lifetimes", PerformanceDiagnosticTests.RatesAndTasks),
+    ("Performance recorder lifecycle, failure and retention", PerformanceDiagnosticTests.RecorderLifecycle),
+    ("Performance actual setting and callback path", PerformanceDiagnosticTests.ActualSettingAndCallback),
+    ("Performance deterministic idle, burst and gap replay", PerformanceBaseline.ReplayQualityScenarios),
+    ("Performance timed flush and file rotation", PerformanceDiagnosticTests.RecorderTimedFlushAndRotation),
+    ("IB standalone consumers and private dependency isolation", ModuleReuseTests.PrivateDependencies),
+    ("IB cross-plugin Client ID reservation and release", ModuleReuseTests.SessionReservations),
+    ("IB request ID ownership and Client ID conflict callback", ModuleReuseTests.RequestIdsAndConflictCallback),
+    ("IB independent source-shared connection pools", ModuleReuseTests.IndependentPools),
+    ("Column registration extensibility and all layout combinations", ModuleReuseTests.ExtensibleColumns),
+    ("Status cache supports additional column snapshots", ModuleReuseTests.ExtensibleStatusCache),
+    ("History disabled defaults, contracts and edition isolation", MarketHistoryTests.DisabledAndContracts),
+    ("History bounded admission and persisted congestion gaps", MarketHistoryTests.CongestionAndFlush),
+    ("History writer fault isolation and bounded shutdown", MarketHistoryTests.FailureAndShutdown),
+    ("History actual shared IB reception and source quality", MarketHistoryTests.IbSharedIntake),
+    ("History Nightwatch single-flight and immutable capture", MarketHistoryTests.NightwatchDedupAndIsolation),
+    ("History source generations and live writer-failure isolation", MarketHistoryTests.SourceBoundariesAndFailure),
+    ("History cancellable queries and recording ownership", MarketHistoryTests.QueryAndRecorderOwnership)
 };
 
 var failures = new List<string>();
+
+if (args.Contains("--ib-module-tests", StringComparer.OrdinalIgnoreCase))
+    tests = tests.Where(test => test.Run.Method.DeclaringType == typeof(ModuleReuseTests)).ToArray();
+if (args.Contains("--history-tests", StringComparer.OrdinalIgnoreCase))
+    tests = tests.Where(test => test.Run.Method.DeclaringType == typeof(MarketHistoryTests)).ToArray();
 
 foreach (var test in tests)
 {
@@ -109,8 +167,10 @@ foreach (var test in tests)
     }
     catch (Exception ex)
     {
-        failures.Add($"{test.Name}: {ex.Message}");
-        Console.WriteLine($"FAIL  {test.Name}: {ex.Message}");
+        var cause = ex.GetBaseException();
+        failures.Add($"{test.Name}: {cause.Message}");
+        Console.WriteLine($"FAIL  {test.Name}: {cause.Message}");
+        Console.WriteLine(cause.StackTrace);
     }
 }
 
@@ -1471,7 +1531,7 @@ static void TestEditionAssemblies()
             throwOnError: true)!;
         var protobufMessage = Activator.CreateInstance(protobufMessageType)!;
         Assert(protobufMessage.ToString() is not null);
-        var loadedProtobuf = AppDomain.CurrentDomain.GetAssemblies()
+        var loadedProtobuf = AssemblyLoadContext.GetLoadContext(ibApi)!.Assemblies
             .SingleOrDefault(static assembly =>
                 assembly.GetName().Name == "Google.Protobuf");
         Assert(loadedProtobuf is not null);

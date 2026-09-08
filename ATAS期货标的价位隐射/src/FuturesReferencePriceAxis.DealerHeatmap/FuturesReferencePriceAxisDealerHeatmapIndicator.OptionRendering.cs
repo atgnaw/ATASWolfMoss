@@ -13,6 +13,8 @@ using DrawingColor = System.Drawing.Color;
 
 public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 {
+    private readonly OptionRenderCache _oiRenderCache = new();
+    private readonly OptionRenderCache _flowRenderCache = new();
     private static readonly DrawingColor OptionTrackBackground =
         DrawingColor.FromArgb(185, 38, 45, 55);
     private static readonly DrawingColor OptionCallColor =
@@ -46,7 +48,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
         }
 
-        var maximum = OptionPresentation.GetOpenInterestMaximum(snapshot.Rows);
+        var maximum = _oiRenderCache.Get(snapshot.Rows, true, OptionDataStatus.Daily).Maximum;
         DrawOptionRows(
             context,
             rect,
@@ -76,7 +78,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
         }
 
-        var maximum = OptionPresentation.GetPremiumMaximum(snapshot.Rows);
+        var maximum = _flowRenderCache.Get(snapshot.Rows, false, snapshot.Status).Maximum;
         DrawOptionRows(
             context,
             rect,
@@ -98,19 +100,21 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         bool useOpenInterest,
         OptionDataStatus status)
     {
-        var ordered = rows.OrderBy(static row => row.StrikeUsd).ToArray();
-        var strikes = ordered.Select(static row => row.StrikeUsd).ToArray();
+        var frame = (useOpenInterest ? _oiRenderCache : _flowRenderCache).Get(rows, useOpenInterest, status);
+        var ordered = frame.Rows;
+        var strikes = frame.Strikes;
 
         for (var index = 0; index < ordered.Length; index++)
         {
-            var row = ordered[index];
+            var prepared = ordered[index];
+            var row = prepared.Row;
             var rowRect = GetOptionRowRectangle(
                 columnRect,
                 strikes,
                 index,
                 ratio,
-                row.FlowLowerBoundUsd,
-                row.FlowUpperBoundUsd);
+                prepared.Lower,
+                prepared.Upper);
 
             if (!rowRect.HasValue)
                 continue;
@@ -132,18 +136,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             var putValue = useOpenInterest
                 ? row.PutOpenInterest
                 : row.PutPremium;
-            var callMarker = useOpenInterest ? OptionPresentation.UnknownDataMarker
-                : OptionPresentation.GetFlowMissingMarker(status, row.CallFlowCoverage);
-            var putMarker = useOpenInterest ? OptionPresentation.UnknownDataMarker
-                : OptionPresentation.GetFlowMissingMarker(status, row.PutFlowCoverage);
             var callColor = !useOpenInterest && row.CallFlowRetained
                 ? DrawingColor.FromArgb(130, OptionCallColor) : OptionCallColor;
             var putColor = !useOpenInterest && row.PutFlowRetained
                 ? DrawingColor.FromArgb(130, OptionPutColor) : OptionPutColor;
-            DrawOptionLane(context, callRect, callValue, maximum, callColor, callMarker,
-                !useOpenInterest && row.CallFlowIsPartial);
-            DrawOptionLane(context, putRect, putValue, maximum, putColor, putMarker,
-                !useOpenInterest && row.PutFlowIsPartial);
+            DrawOptionLane(context, callRect, callValue, maximum, callColor, prepared.CallLabel);
+            DrawOptionLane(context, putRect, putValue, maximum, putColor, prepared.PutLabel);
 
             if (atmStrike.HasValue && row.StrikeUsd == atmStrike.Value)
                 DrawBorder(context, rowRect.Value, OptionAtmColor);
@@ -156,15 +154,14 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         decimal? value,
         decimal maximum,
         DrawingColor color,
-        string missingMarker,
-        bool isPartial)
+        string label)
     {
         if (!value.HasValue)
         {
             if (track.Height >= 9 && track.Width >= 38)
             {
                 context.DrawString(
-                    missingMarker,
+                    label,
                     ChartInfo!.PriceAxisFont,
                     DrawingColor.FromArgb(190, 160, 169, 181),
                     new Rectangle(track.Left + 2, track.Top, track.Width - 4, track.Height),
@@ -175,7 +172,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
 
         context.FillRectangle(OptionTrackBackground, track);
-        DrawOptionBar(context, track, value.Value, maximum, color, isPartial);
+        DrawOptionBar(context, track, value.Value, maximum, color, label);
     }
 
     private void DrawOptionBar(
@@ -184,7 +181,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         decimal value,
         decimal maximum,
         DrawingColor color,
-        bool isPartial)
+        string label)
     {
         var ratio = OptionPresentation.GetFillRatio(value, maximum);
         var width = (int)Math.Round(track.Width * ratio);
@@ -200,7 +197,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
 
         context.DrawString(
-            OptionPresentation.FormatFlowValue(value, isPartial),
+            label,
             ChartInfo!.PriceAxisFont,
             DrawingColor.White,
             new Rectangle(track.Left + 2, track.Top, track.Width - 4, track.Height),
@@ -243,7 +240,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     {
         var snapshot = Volatile.Read(ref _optionOpenInterestSnapshot);
 
-        if (!TryGetHoveredOptionRow(rect, ratio, snapshot.Rows,
+        if (!TryGetHoveredOptionRow(rect, ratio, _oiRenderCache.Get(snapshot.Rows, true, OptionDataStatus.Daily),
                 out var row, out var right, out _))
         {
             return;
@@ -259,8 +256,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             $"OI {(value.HasValue ? value.Value.ToString("#,0", CultureInfo.InvariantCulture) : "--")}",
             $"Expiration {snapshot.Expiration:yyyy-MM-dd}",
             $"Position {location}",
-            "Session DAILY",
-            $"Received {FormatDealerTime(snapshot.ReceivedUtc)}"
+            $"State {snapshot.Status.ToString().ToUpperInvariant()}",
+            $"Last IB receipt {FormatOptionalOptionTime(snapshot.ReceivedByStrike.GetValueOrDefault((row.StrikeUsd, right)))}",
+            snapshot.Message
         }, 300);
     }
 
@@ -271,7 +269,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     {
         var snapshot = Volatile.Read(ref _optionFlowSnapshot);
 
-        if (!TryGetHoveredOptionRow(rect, ratio, snapshot.Rows,
+        if (!TryGetHoveredOptionRow(rect, ratio, _flowRenderCache.Get(snapshot.Rows, false, snapshot.Status),
                 out var row, out var right, out _))
         {
             return;
@@ -326,7 +324,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     private bool TryGetHoveredOptionRow(
         Rectangle rect,
         decimal ratio,
-        IReadOnlyList<OptionStrikeRow> rows,
+        OptionRenderFrame frame,
         out OptionStrikeRow row,
         out OptionRight right,
         out Rectangle rowRect)
@@ -344,18 +342,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return false;
         }
 
-        var ordered = rows.OrderBy(static value => value.StrikeUsd).ToArray();
-        var strikes = ordered.Select(static value => value.StrikeUsd).ToArray();
+        var ordered = frame.Rows;
+        var strikes = frame.Strikes;
 
         for (var index = 0; index < ordered.Length; index++)
         {
             var candidate = GetOptionRowRectangle(rect, strikes, index, ratio,
-                ordered[index].FlowLowerBoundUsd, ordered[index].FlowUpperBoundUsd);
+                ordered[index].Lower, ordered[index].Upper);
 
             if (!candidate.HasValue || !candidate.Value.Contains(mouse.LastPosition))
                 continue;
 
-            row = ordered[index];
+            row = ordered[index].Row;
             rowRect = candidate.Value;
             right = mouse.LastPosition.Y < candidate.Value.Top + candidate.Value.Height / 2
                 ? OptionRight.Call

@@ -1,3 +1,4 @@
+// Source-shared module: compiled privately into each consuming plugin.
 namespace WolfMoss.ATAS.PriceMapping;
 
 using WolfMoss.ATAS.PriceMapping.Core;
@@ -7,7 +8,7 @@ internal readonly record struct IbGatewayConnectionOptions(
     int Port,
     int ClientId)
 {
-    public string PoolKey => $"{Host.ToUpperInvariant()}:{Port}:{ClientId}";
+    public string PoolKey => IbSessionReservation.Key(Host, Port, ClientId);
 }
 
 internal readonly record struct IbOptionSubscriptionRequirements(
@@ -46,10 +47,15 @@ internal interface IIbOptionSubscriptionLease : IDisposable
     int ContractCount { get; }
 
     IReadOnlyList<long> ContractIds { get; }
+
+    Task UpdateAsync(IReadOnlyList<OptionContractDescriptor> contracts,
+        IbOptionSubscriptionRequirements requirements, int marketDataLineBudget,
+        CancellationToken cancellationToken);
 }
 
 internal interface IIbOptionGatewayClient : IAsyncDisposable
 {
+    IbPerformanceSnapshot? PerformanceSnapshot => null;
     bool IsAvailable { get; }
 
     bool IsConnected { get; }

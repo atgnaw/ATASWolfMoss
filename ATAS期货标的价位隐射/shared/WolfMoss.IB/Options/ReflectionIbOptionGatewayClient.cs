@@ -1,3 +1,4 @@
+// Source-shared module: compiled privately into each consuming plugin.
 namespace WolfMoss.ATAS.PriceMapping;
 
 using System.Collections;
@@ -7,20 +8,42 @@ using System.Reflection;
 
 using WolfMoss.ATAS.PriceMapping.Core;
 
-internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
+internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
 {
+    private static long _diagnosticNextInstance;
+    private readonly long _diagnosticInstance = Interlocked.Increment(ref _diagnosticNextInstance);
+    private long _diagnosticSends;
+    private long _diagnosticCancels;
+    private int _diagnosticLines;
+    private int _diagnosticConsumers;
+    public IbPerformanceSnapshot PerformanceSnapshot => new(_diagnosticInstance,
+        Interlocked.Read(ref _diagnosticSends), Interlocked.Read(ref _diagnosticCancels),
+        Volatile.Read(ref _diagnosticLines), Volatile.Read(ref _diagnosticConsumers),
+        (_readerLoop is { IsCompleted: false } ? 1 : 0) + (_outbound.IsRunning ? 1 : 0));
+
+    // Called only where the existing subscription mutation lock is already held.
+    private void UpdateDiagnosticOccupancy()
+    {
+        Volatile.Write(ref _diagnosticLines, _subscriptionsByConId.Values.Count(static s => s.RequestId != 0));
+        Volatile.Write(ref _diagnosticConsumers, _subscriptionsByConId.Values
+            .SelectMany(static s => s.Consumers.Keys).Distinct().Count());
+    }
     private static readonly TimeSpan LineLimitObservationLifetime = TimeSpan.FromMinutes(1);
     private readonly IbGatewayConnectionOptions _options;
     private readonly Assembly? _assembly = EmbeddedDependencyResolver.TryLoadIbApiAssembly();
     private readonly object _sync = new();
-    private readonly object _pacingSync = new();
-    private readonly Queue<DateTime> _outboundMessages = new();
+    private readonly IbOutboundDispatcher _outbound;
+    private readonly Task _previousDisposal;
+    internal readonly OptionFlowLineBudget FlowBudget = new();
+    private Task? _initialization;
     private readonly ConcurrentDictionary<int, ContractRequest> _contractRequests = new();
     private readonly ConcurrentDictionary<int, SecurityDefinitionRequest> _securityRequests = new();
     private readonly ConcurrentDictionary<int, SharedSubscription> _subscriptionsByRequest = new();
     private readonly Dictionary<long, SharedSubscription> _subscriptionsByConId = new();
     private readonly Dictionary<(string Ticker, DateOnly Expiration), ChainDefinition> _chains = new();
     private readonly Dictionary<OptionContractKey, OptionContractDescriptor?> _resolvedContracts = new();
+    private readonly SharedAsyncRequests<(string Ticker, DateOnly Expiration), IReadOnlyList<decimal>> _chainFlights = new();
+    private readonly SharedAsyncRequests<OptionContractKey, OptionContractDescriptor?> _contractFlights = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource _connected =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -28,16 +51,20 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
     private object? _reader;
     private object? _signal;
     private Task? _readerLoop;
-    private int _nextRequestId = 10_000;
+    private readonly IbRequestIdSequence _requestIds = new();
+    private IDisposable? _sessionReservation;
     private long _nextConsumerId;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private Task? _disposal;
     private int _connectionFaulted;
     private int _observedMarketDataLineCeiling = int.MaxValue;
     private DateTime _lineLimitObservedUtc = DateTime.MinValue;
 
-    public ReflectionIbOptionGatewayClient(IbGatewayConnectionOptions options)
+    public ReflectionIbOptionGatewayClient(IbGatewayConnectionOptions options, Task? previousDisposal = null)
     {
         _options = options;
+        _previousDisposal = previousDisposal ?? Task.CompletedTask;
+        _outbound = new IbOutboundDispatcher(() => Interlocked.Increment(ref _diagnosticSends));
     }
 
     public bool IsAvailable => GetType("IBApi.EClientSocket") != null;
@@ -51,14 +78,7 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         }
     }
 
-    public int ActiveMarketDataLines
-    {
-        get
-        {
-            lock (_sync)
-                return _subscriptionsByConId.Values.Count(static value => value.RequestId != 0);
-        }
-    }
+    public int ActiveMarketDataLines => Volatile.Read(ref _diagnosticLines);
 
     internal bool ConnectionFaulted => Volatile.Read(ref _connectionFaulted) != 0;
 
@@ -78,17 +98,23 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         if (IsConnected && _connected.Task.IsCompletedSuccessfully)
             return;
 
-        lock (_sync)
-        {
-            if (_client == null)
-                InitializeSocket();
-        }
-
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
 
         try
         {
+            Task initialization;
+            lock (_sync)
+            {
+                ThrowIfDisposed();
+                initialization = _initialization ??= Task.Run(async () =>
+                {
+                    await _previousDisposal.ConfigureAwait(false);
+                    _lifetime.Token.ThrowIfCancellationRequested();
+                    InitializeSocket();
+                });
+            }
+            await initialization.WaitAsync(timeout.Token).ConfigureAwait(false);
             await _connected.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
 
             if (!IsConnected)
@@ -100,13 +126,19 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            Interlocked.Exchange(ref _connectionFaulted, 1);
             throw new IbOptionGatewayException(
                 "CONNECT_TIMEOUT",
                 $"IB Gateway 连接超时 {_options.Host}:{_options.Port}");
         }
     }
 
-    public async Task<IReadOnlyList<decimal>> GetAvailableStrikesAsync(
+    public Task<IReadOnlyList<decimal>> GetAvailableStrikesAsync(
+        OptionUnderlyingProfile profile, DateOnly expiration, CancellationToken cancellationToken)
+        => _chainFlights.GetAsync((profile.Ticker, expiration),
+            () => GetAvailableStrikesCoreAsync(profile, expiration, _lifetime.Token), cancellationToken);
+
+    private async Task<IReadOnlyList<decimal>> GetAvailableStrikesCoreAsync(
         OptionUnderlyingProfile profile,
         DateOnly expiration,
         CancellationToken cancellationToken)
@@ -216,11 +248,13 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         cancellationToken.ThrowIfCancellationRequested();
         var consumerId = Interlocked.Increment(ref _nextConsumerId);
         var attached = new List<long>(contracts.Count);
+        var sends = new List<Task>();
 
         try
         {
             lock (_sync)
             {
+                ThrowIfDisposed();
                 var effectiveLineBudget = GetEffectiveLineBudgetNoLock(
                     marketDataLineBudget,
                     DateTime.UtcNow);
@@ -248,22 +282,26 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
                 {
                     if (!_subscriptionsByConId.TryGetValue(contract.ConId, out var shared))
                     {
-                        shared = new SharedSubscription(contract);
+                        shared = new SharedSubscription(contract) { HistoryOwner = this };
                         _subscriptionsByConId.Add(contract.ConId, shared);
                     }
 
-                    lock (shared.Consumers)
-                        shared.Consumers[consumerId] = onUpdate;
+                    shared.Consumers[consumerId] = onUpdate;
+                    shared.Demands[consumerId] = requirements;
+                    shared.RefreshCallbacks();
 
                     var combined = shared.Requirements.Union(requirements);
                     attached.Add(contract.ConId);
 
                     if (combined != shared.Requirements || shared.RequestId == 0)
-                        StartOrReplaceSubscription(shared, combined);
+                        sends.Add(StartOrReplaceSubscription(shared, combined));
                 }
+                UpdateDiagnosticOccupancy();
             }
 
-            return new SubscriptionLease(this, consumerId, attached);
+            await Task.WhenAll(sends).WaitAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return new SubscriptionLease(this, consumerId, attached, onUpdate);
         }
         catch
         {
@@ -272,29 +310,78 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         }
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task UpdateConsumerAsync(SubscriptionLease lease,
+        IReadOnlyList<OptionContractDescriptor> contracts,
+        IbOptionSubscriptionRequirements requirements, int budget, CancellationToken token)
     {
-        if (_disposed)
-            return;
-
-        _disposed = true;
-        _lifetime.Cancel();
-
+        token.ThrowIfCancellationRequested();
+        var sends = new List<Task>();
         lock (_sync)
         {
+            ThrowIfDisposed();
+            if (!lease.IsOwned) throw new ObjectDisposedException(nameof(SubscriptionLease));
+            var wanted = contracts.Select(static c => c.ConId).ToHashSet();
+            var afterRelease = _subscriptionsByConId.Values
+                .Where(s => wanted.Contains(s.Contract.ConId)
+                    || s.Consumers.Keys.Any(id => id != lease.ConsumerId))
+                .Select(static s => s.Contract.ConId).ToArray();
+            var allocation = OptionMarketDataLineAllocator.Allocate(contracts, afterRelease,
+                GetEffectiveLineBudgetNoLock(budget, DateTime.UtcNow));
+            if (!allocation.IsComplete)
+                throw new IbOptionGatewayException("LINE_LIMIT", "换档后行情线超出共享预算");
+            ReleaseConsumer(lease.ConsumerId, lease.ContractIds.Where(id => !wanted.Contains(id)).ToArray());
+            lease.ReplaceIds(allocation.Contracts.Select(static c => c.ConId).ToArray());
+            foreach (var contract in allocation.Contracts)
+            {
+                if (!_subscriptionsByConId.TryGetValue(contract.ConId, out var shared))
+                    _subscriptionsByConId.Add(contract.ConId, shared = new SharedSubscription(contract) { HistoryOwner = this });
+                shared.Consumers[lease.ConsumerId] = lease.Callback;
+                shared.Demands[lease.ConsumerId] = requirements;
+                shared.RefreshCallbacks();
+                var combined = shared.Demands.Values.Aggregate(default(IbOptionSubscriptionRequirements),
+                    static (sum, item) => sum.Union(item));
+                if (combined != shared.Requirements || shared.RequestId == 0)
+                    sends.Add(StartOrReplaceSubscription(shared, combined));
+            }
+            UpdateDiagnosticOccupancy();
+        }
+        await Task.WhenAll(sends).WaitAsync(token).ConfigureAwait(false);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        lock (_sync)
+        {
+            if (_disposal != null) return new ValueTask(_disposal);
+            _disposed = true;
             foreach (var subscription in _subscriptionsByConId.Values)
             {
-                if (subscription.RequestId != 0)
-                {
-                    PaceOutbound();
-                    TryInvoke(_client, "cancelMktData", subscription.RequestId);
-                }
+                RecordHistoryEnd(subscription, "CONNECTION_CLOSED");
+                Volatile.Write(ref subscription.Callbacks, Array.Empty<Action<IbOptionMarketDataUpdate>>());
             }
-
             _subscriptionsByConId.Clear();
             _subscriptionsByRequest.Clear();
+            UpdateDiagnosticOccupancy();
+            _disposal = Task.Run(DisposeCoreAsync);
+            return new ValueTask(_disposal);
         }
+    }
 
+    private async Task DisposeCoreAsync()
+    {
+        _lifetime.Cancel();
+        var closed = new IbOptionGatewayException("CONNECTION_CLOSED", "IB Gateway 已释放");
+        _connected.TrySetException(closed);
+        foreach (var request in _contractRequests.Values) request.Completion.TrySetException(closed);
+        foreach (var request in _securityRequests.Values) request.Completion.TrySetException(closed);
+        TryInvoke(_client, "eDisconnect");
+        TryInvoke(_signal, "issueSignal");
+        await _outbound.DisposeAsync().ConfigureAwait(false);
+        if (_initialization != null)
+        {
+            try { await _initialization.ConfigureAwait(false); }
+            catch { /* Failed initialization must not prevent retirement. */ }
+        }
         TryInvoke(_client, "eDisconnect");
         TryInvoke(_signal, "issueSignal");
 
@@ -312,43 +399,19 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         }
 
         _lifetime.Dispose();
+        Interlocked.Exchange(ref _sessionReservation, null)?.Dispose();
     }
 
     private void InitializeSocket()
     {
-        var wrapperType = GetType("IBApi.EWrapper")
-            ?? throw new IbOptionGatewayException("IBAPI_MISSING", AvailabilityMessage);
-        var proxy = DispatchProxy.Create(wrapperType, typeof(IbCallbackDispatchProxy));
-        ((IbCallbackDispatchProxy)proxy).Handler = HandleCallback;
-        var signalType = GetType("IBApi.EReaderMonitorSignal")
-            ?? throw new IbOptionGatewayException("IBAPI_MISSING", "EReaderMonitorSignal 不存在");
-        _signal = Activator.CreateInstance(signalType)
-            ?? throw new IbOptionGatewayException("IBAPI_CREATE", "无法创建 IB reader signal");
-        var clientType = GetType("IBApi.EClientSocket")!;
-        _client = Activator.CreateInstance(clientType, proxy, _signal)
-            ?? throw new IbOptionGatewayException("IBAPI_CREATE", "无法创建 IB client socket");
-        InvokeConnect(_client);
-        var readerType = GetType("IBApi.EReader")
-            ?? throw new IbOptionGatewayException("IBAPI_CREATE", "EReader 不存在");
-        _reader = Activator.CreateInstance(readerType, _client, _signal)
-            ?? throw new IbOptionGatewayException("IBAPI_CREATE", "无法创建 IB reader");
-        InvokeRequired(_reader, "Start");
+        if (_assembly == null) throw new IbOptionGatewayException("IBAPI_MISSING", AvailabilityMessage);
+        try { _sessionReservation = IbSessionReservation.Reserve(_options.Host, _options.Port, _options.ClientId); }
+        catch (InvalidOperationException)
+        { throw new IbOptionGatewayException("CLIENT_ID_IN_USE", "IB Client ID 已被其他插件占用，请为本插件配置不同的 ID"); }
+        (_client, _signal) = IbSocketRuntime.Create(_assembly, HandleCallback);
+        IbSocketRuntime.Connect(_client, _options.Host, _options.Port, _options.ClientId);
+        _reader = IbSocketRuntime.StartReader(_assembly, _client, _signal);
         _readerLoop = Task.Run(ReadMessages, _lifetime.Token);
-    }
-
-    private void InvokeConnect(object client)
-    {
-        var methods = client.GetType().GetMethods()
-            .Where(static method => method.Name == "eConnect")
-            .OrderByDescending(static method => method.GetParameters().Length)
-            .ToArray();
-        var method = methods.FirstOrDefault(static candidate =>
-            candidate.GetParameters().Length is 3 or 4)
-            ?? throw new IbOptionGatewayException("IBAPI_METHOD", "找不到 eConnect");
-        var args = method.GetParameters().Length == 4
-            ? new object?[] { _options.Host, _options.Port, _options.ClientId, false }
-            : new object?[] { _options.Host, _options.Port, _options.ClientId };
-        method.Invoke(client, args);
     }
 
     private void ReadMessages()
@@ -407,6 +470,7 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
                     OnError(args);
                     break;
                 case "connectionClosed":
+                    RecordHistoryConnectionEnd();
                     Interlocked.Exchange(ref _connectionFaulted, 1);
                     _connected.TrySetException(new IbOptionGatewayException(
                         "CONNECTION_CLOSED", "IB Gateway 已断开"));
@@ -419,7 +483,15 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         }
     }
 
-    private async Task<OptionContractDescriptor?> ResolveOptionContractAsync(
+    private Task<OptionContractDescriptor?> ResolveOptionContractAsync(
+        OptionUnderlyingProfile profile, ChainDefinition chain, DateOnly expiration, decimal strike,
+        OptionRight right, CancellationToken cancellationToken)
+        => _contractFlights.GetAsync(new OptionContractKey(profile.Ticker.ToUpperInvariant(),
+                expiration, strike, right, chain.TradingClass.ToUpperInvariant()),
+            () => ResolveOptionContractCoreAsync(profile, chain, expiration, strike, right, _lifetime.Token),
+            cancellationToken);
+
+    private async Task<OptionContractDescriptor?> ResolveOptionContractCoreAsync(
         OptionUnderlyingProfile profile,
         ChainDefinition chain,
         DateOnly expiration,
@@ -512,8 +584,8 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
 
         try
         {
-            PaceOutbound();
-            InvokeRequired(_client!, "reqContractDetails", requestId, contract);
+            await _outbound.Enqueue(() => InvokeRequired(_client!, "reqContractDetails", requestId, contract),
+                cancellationToken).ConfigureAwait(false);
             return await request.Completion.Task
                 .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken)
                 .ConfigureAwait(false);
@@ -538,15 +610,14 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
 
         try
         {
-            PaceOutbound();
-            InvokeRequired(
+            await _outbound.Enqueue(() => InvokeRequired(
                 _client!,
                 "reqSecDefOptParams",
                 requestId,
                 profile.Ticker,
                 string.Empty,
                 profile.SecurityType,
-                checked((int)underlyingConId));
+                checked((int)underlyingConId)), cancellationToken).ConfigureAwait(false);
             return await request.Completion.Task
                 .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken)
                 .ConfigureAwait(false);
@@ -640,15 +711,15 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         }
     }
 
-    private void StartOrReplaceSubscription(
+    private Task StartOrReplaceSubscription(
         SharedSubscription subscription,
         IbOptionSubscriptionRequirements requirements)
     {
         if (subscription.RequestId != 0)
         {
+            RecordHistoryEnd(subscription, "SUBSCRIPTION_REPLACED");
             _subscriptionsByRequest.TryRemove(subscription.RequestId, out _);
-            PaceOutbound();
-            TryInvoke(_client, "cancelMktData", subscription.RequestId);
+            QueueCancel(subscription.RequestId);
         }
 
         var requestId = NextRequestId();
@@ -657,8 +728,7 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         _subscriptionsByRequest[requestId] = subscription;
         var contract = CreateContractFromDescriptor(subscription.Contract);
         var options = CreateEmptyTagValueList();
-        PaceOutbound();
-        InvokeRequired(
+        var send = _outbound.Enqueue(() => InvokeRequired(
             _client!,
             "reqMktData",
             requestId,
@@ -666,7 +736,10 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
             requirements.GenericTickList,
             false,
             false,
-            options);
+            options), _lifetime.Token,
+            () => _subscriptionsByRequest.ContainsKey(requestId));
+        ObserveSend(send);
+        return send;
     }
 
     private void OnTickSize(object?[] args)
@@ -689,13 +762,13 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         if (!relevant)
             return;
 
-        Publish(subscription, new IbOptionMarketDataUpdate(
+        PublishReceived(subscription, new IbOptionMarketDataUpdate(
             subscription.Contract,
             DateTime.UtcNow,
             decimal.ToInt64(decimal.Truncate(size)),
             null,
             null,
-            subscription.IsDelayed));
+            subscription.IsDelayed), requestId);
     }
 
     private void OnTickString(object?[] args)
@@ -705,19 +778,24 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
             || !TryInt32(args[1], out var field)
             || field is not (48 or 77)
             || !_subscriptionsByRequest.TryGetValue(requestId, out var subscription)
-            || args[2] is not string text
-            || !TryParseRealtimeVolume(subscription.Contract, text, out var sample))
+            || args[2] is not string text)
         {
             return;
         }
 
-        Publish(subscription, new IbOptionMarketDataUpdate(
+        if (!TryParseRealtimeVolume(subscription.Contract, text, out var sample))
+        {
+            RecordHistoryEnd(subscription, "INVALID_SAMPLE");
+            return;
+        }
+
+        PublishReceived(subscription, new IbOptionMarketDataUpdate(
             subscription.Contract,
             DateTime.UtcNow,
             null,
             field == 77 ? sample : null,
             field == 48 ? sample : null,
-            subscription.IsDelayed));
+            subscription.IsDelayed), requestId);
     }
 
     private void OnMarketDataType(object?[] args)
@@ -736,8 +814,19 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         if (!IbErrorCallbackParser.TryParse(args, out var callback))
             return;
 
-        if (callback.ErrorCode == 1100)
+        if (callback.ErrorCode == 326)
+        {
             Interlocked.Exchange(ref _connectionFaulted, 1);
+            _connected.TrySetException(new IbOptionGatewayException("CLIENT_ID_IN_USE",
+                "IB 326: Client ID 已占用，请配置不同 ID；不会自动接管其他客户端"));
+            return;
+        }
+
+        if (callback.ErrorCode == 1100)
+        {
+            RecordHistoryConnectionEnd();
+            Interlocked.Exchange(ref _connectionFaulted, 1);
+        }
 
         if (callback.ErrorCode is not (100 or 101 or 200 or 321 or 354))
             return;
@@ -764,7 +853,9 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
         {
             lock (_sync)
             {
+                if (subscription.RequestId != callback.RequestId) return;
                 subscription.RequestId = 0;
+                UpdateDiagnosticOccupancy();
 
                 if (callback.ErrorCode == 101)
                     ObserveLineLimitNoLock(DateTime.UtcNow);
@@ -787,6 +878,7 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
 
     private int GetEffectiveLineBudgetNoLock(int configuredBudget, DateTime utcNow)
     {
+        configuredBudget = FlowBudget.EffectiveBudget(configuredBudget);
         if (_observedMarketDataLineCeiling == int.MaxValue)
             return configuredBudget;
 
@@ -833,67 +925,67 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
                 if (!_subscriptionsByConId.TryGetValue(conId, out var shared))
                     continue;
 
-                lock (shared.Consumers)
-                    shared.Consumers.Remove(consumerId);
+                shared.Consumers.Remove(consumerId);
+                shared.Demands.Remove(consumerId);
+                shared.RefreshCallbacks();
 
-                int consumerCount;
-
-                lock (shared.Consumers)
-                    consumerCount = shared.Consumers.Count;
-
-                if (consumerCount != 0)
+                if (shared.Consumers.Count != 0)
+                {
+                    var demand = shared.Demands.Values.Aggregate(
+                        default(IbOptionSubscriptionRequirements), static (sum, item) => sum.Union(item));
+                    if (demand != shared.Requirements && shared.RequestId != 0)
+                        _ = StartOrReplaceSubscription(shared, demand);
                     continue;
+                }
 
+                RecordHistoryEnd(shared, "SUBSCRIPTION_ENDED");
                 _subscriptionsByConId.Remove(conId);
                 if (shared.RequestId != 0)
                 {
                     _subscriptionsByRequest.TryRemove(shared.RequestId, out _);
-                    PaceOutbound();
-                    TryInvoke(_client, "cancelMktData", shared.RequestId);
+                    QueueCancel(shared.RequestId);
                 }
             }
+            UpdateDiagnosticOccupancy();
         }
     }
 
-    private void PaceOutbound()
+    private void QueueCancel(int requestId)
     {
-        while (true)
+        ObserveSend(_outbound.Enqueue(() =>
         {
-            TimeSpan delay;
+            Interlocked.Increment(ref _diagnosticCancels);
+            InvokeRequired(_client!, "cancelMktData", requestId);
+        }, _lifetime.Token));
+    }
 
-            lock (_pacingSync)
-            {
-                var nowUtc = DateTime.UtcNow;
-                var cutoffUtc = nowUtc - TimeSpan.FromSeconds(1);
-
-                while (_outboundMessages.Count > 0
-                       && _outboundMessages.Peek() <= cutoffUtc)
-                {
-                    _outboundMessages.Dequeue();
-                }
-
-                if (_outboundMessages.Count < 45)
-                {
-                    _outboundMessages.Enqueue(nowUtc);
-                    return;
-                }
-
-                delay = _outboundMessages.Peek() + TimeSpan.FromSeconds(1) - nowUtc;
-            }
-
-            if (delay > TimeSpan.Zero)
-                Thread.Sleep(delay);
+    private async void ObserveSend(Task send)
+    {
+        try { await send.ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        catch
+        {
+            // Queue saturation or a failed cancel must not leak server-side lines.
+            // Retire this connection; consumers reconnect through the normal backoff.
+            Interlocked.Exchange(ref _connectionFaulted, 1);
+            _ = DisposeAsync();
         }
     }
 
     private static void Publish(
         SharedSubscription subscription,
         IbOptionMarketDataUpdate update)
-    {
-        Action<IbOptionMarketDataUpdate>[] consumers;
+        => PublishReceived(subscription, update, subscription.RequestId);
 
-        lock (subscription.Consumers)
-            consumers = subscription.Consumers.Values.ToArray();
+    private static void PublishReceived(SharedSubscription subscription, IbOptionMarketDataUpdate update, int receivedRequestId)
+    {
+        // One record per shared reception, before chart fanout. Disabled path creates nothing.
+        if (WolfMoss.MarketData.MarketEventHub.Current is { } recorder)
+        {
+            try { subscription.HistoryOwner?.RecordMarketInput(subscription, update, recorder, receivedRequestId); }
+            catch { recorder.CaptureFailed(); /* Optional history must never stop realtime callbacks. */ }
+        }
+        var consumers = Volatile.Read(ref subscription.Callbacks);
 
         foreach (var consumer in consumers)
         {
@@ -965,7 +1057,7 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
 
     private Type? GetType(string fullName) => _assembly?.GetType(fullName);
 
-    private int NextRequestId() => Interlocked.Increment(ref _nextRequestId);
+    private int NextRequestId() => _requestIds.Next();
 
     private void ThrowIfDisposed()
     {
@@ -991,7 +1083,7 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
             return false;
         }
 
-        var sampleUtc = DateTime.UtcNow;
+        DateTime sampleUtc;
         decimal? lastTradePrice = null;
         long? lastTradeSize = null;
 
@@ -1019,8 +1111,10 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
             }
             catch (ArgumentOutOfRangeException)
             {
+                return false;
             }
         }
+        else return false; // Never invent a source timestamp from callback receive time.
 
         sample = new OptionCumulativeSample(
             contract.ConId,
@@ -1066,13 +1160,7 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
     }
 
     private static void InvokeRequired(object target, string method, params object?[] args)
-    {
-        var candidate = target.GetType().GetMethods()
-            .FirstOrDefault(value => value.Name == method
-                && value.GetParameters().Length == args.Length)
-            ?? throw new MissingMethodException(target.GetType().FullName, method);
-        candidate.Invoke(target, args);
-    }
+        => IbSocketRuntime.Invoke(target, method, args);
 
     private static void TryInvoke(object? target, string method, params object?[] args)
     {
@@ -1160,9 +1248,14 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
 
     private sealed class SharedSubscription(OptionContractDescriptor contract)
     {
+        public ReflectionIbOptionGatewayClient? HistoryOwner;
+        public IbHistoryObservation? History;
         public OptionContractDescriptor Contract { get; } = contract;
 
         public Dictionary<long, Action<IbOptionMarketDataUpdate>> Consumers { get; } = new();
+        public Dictionary<long, IbOptionSubscriptionRequirements> Demands { get; } = new();
+        public Action<IbOptionMarketDataUpdate>[] Callbacks = Array.Empty<Action<IbOptionMarketDataUpdate>>();
+        public void RefreshCallbacks() => Volatile.Write(ref Callbacks, Consumers.Values.ToArray());
 
         public IbOptionSubscriptionRequirements Requirements { get; set; }
 
@@ -1174,18 +1267,30 @@ internal sealed class ReflectionIbOptionGatewayClient : IIbOptionGatewayClient
     private sealed class SubscriptionLease(
         ReflectionIbOptionGatewayClient owner,
         long consumerId,
-        IReadOnlyList<long> conIds) : IIbOptionSubscriptionLease
+        IReadOnlyList<long> conIds,
+        Action<IbOptionMarketDataUpdate> callback) : IIbOptionSubscriptionLease
     {
         private ReflectionIbOptionGatewayClient? _owner = owner;
+        private IReadOnlyList<long> _conIds = conIds.ToArray();
+        public bool IsOwned => Volatile.Read(ref _owner) != null;
+        public long ConsumerId => consumerId;
+        public Action<IbOptionMarketDataUpdate> Callback => callback;
+        public void ReplaceIds(IReadOnlyList<long> ids) => Volatile.Write(ref _conIds, ids);
 
-        public int ContractCount => conIds.Count;
+        public int ContractCount => ContractIds.Count;
 
-        public IReadOnlyList<long> ContractIds { get; } = conIds.ToArray();
+        public IReadOnlyList<long> ContractIds => Volatile.Read(ref _conIds);
+
+        public Task UpdateAsync(IReadOnlyList<OptionContractDescriptor> contracts,
+            IbOptionSubscriptionRequirements requirements, int marketDataLineBudget, CancellationToken token)
+            => (Volatile.Read(ref _owner) ?? throw new ObjectDisposedException(nameof(SubscriptionLease)))
+                .UpdateConsumerAsync(this, contracts, requirements, marketDataLineBudget, token);
 
         public void Dispose()
         {
             var value = Interlocked.Exchange(ref _owner, null);
-            value?.ReleaseConsumer(consumerId, conIds);
+            if (value == null) return;
+            lock (value._sync) value.ReleaseConsumer(consumerId, ContractIds);
         }
     }
 }

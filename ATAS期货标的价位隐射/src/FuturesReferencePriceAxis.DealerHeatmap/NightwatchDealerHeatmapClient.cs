@@ -71,6 +71,6 @@ internal static class NightwatchDealerHeatmapClient
                         innerException),
                 cancellationToken)
             .ConfigureAwait(false);
-        return DealerHeatmapParser.ParseSnapshot(json.Span, symbol, expiration);
+        return NightwatchEventCapture.Heatmap(DealerHeatmapParser.ParseSnapshot(json.Span, symbol, expiration), DateTime.UtcNow);
     }
 }

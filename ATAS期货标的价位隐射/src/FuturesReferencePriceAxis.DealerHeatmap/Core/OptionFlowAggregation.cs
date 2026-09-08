@@ -9,7 +9,8 @@ public static class OptionFlowAggregation
     {
         value = OptionIntervalValue.Zero;
 
-        if (start.ConId != end.ConId
+        if (!start.HasValidCumulativeValue() || !end.HasValidCumulativeValue()
+            || start.ConId != end.ConId
             || end.SampleUtc < start.SampleUtc
             || start.TotalVolume < 0
             || end.TotalVolume < start.TotalVolume
@@ -40,31 +41,23 @@ public static class OptionFlowAggregation
         DateTime bucketStartUtc,
         DateTime bucketEndUtc,
         bool allowPartial,
-        out OptionIntervalValue value)
+        out OptionIntervalValue value,
+        DateTime? earliestBaselineUtc = null)
     {
         value = OptionIntervalValue.Zero;
 
         if (bucketEndUtc <= bucketStartUtc || samples.Count == 0)
             return false;
 
-        OptionCumulativeSample? baseline = null;
-        OptionCumulativeSample? firstInside = null;
-        OptionCumulativeSample? end = null;
-
-        foreach (var sample in samples)
-        {
-            if (sample.SampleUtc < bucketStartUtc)
-            {
-                baseline = sample;
-                continue;
-            }
-
-            if (sample.SampleUtc >= bucketEndUtc)
-                break;
-
-            firstInside ??= sample;
-            end = sample;
-        }
+        // Ingestion maintains source-time order. Find [start, end) without walking
+        // the entire retained history; keep the strictly-before-start baseline.
+        var first = LowerBound(samples, bucketStartUtc);
+        var last = LowerBound(samples, bucketEndUtc) - 1;
+        OptionCumulativeSample? baseline = first > 0 ? samples[first - 1] : null;
+        if (baseline.HasValue && earliestBaselineUtc.HasValue && baseline.Value.SampleUtc < earliestBaselineUtc.Value)
+            baseline = null;
+        OptionCumulativeSample? firstInside = first <= last ? samples[first] : null;
+        OptionCumulativeSample? end = first <= last ? samples[last] : null;
 
         // No event was observed inside this bucket. Unknown is intentionally
         // different from a confirmed zero-volume interval.
@@ -93,11 +86,12 @@ public static class OptionFlowAggregation
         if (!TryCalculateDelta(firstInside.Value, end.Value, out var remainder))
             return false;
 
-        value = new OptionIntervalValue(
-            checked(firstTrade.Volume + remainder.Volume),
-            firstTrade.Premium + remainder.Premium,
-            firstInside.Value.SampleUtc,
-            true);
+        try
+        {
+            value = new OptionIntervalValue(checked(firstTrade.Volume + remainder.Volume),
+                firstTrade.Premium + remainder.Premium, firstInside.Value.SampleUtc, true);
+        }
+        catch (OverflowException) { return false; }
         return true;
     }
 
@@ -109,6 +103,19 @@ public static class OptionFlowAggregation
         => activeBucketStartUtc != DateTime.MinValue
            && (currentBucketStartUtc <= activeBucketStartUtc
                || utcNow < currentBucketStartUtc + publicationGrace);
+
+    public static int LowerBound(IReadOnlyList<OptionCumulativeSample> samples, DateTime utc)
+    {
+        var low = 0;
+        var high = samples.Count;
+        while (low < high)
+        {
+            var middle = low + (high - low) / 2;
+            if (samples[middle].SampleUtc < utc) low = middle + 1;
+            else high = middle;
+        }
+        return low;
+    }
 
     public static DateTime GetFixedBucketStart(
         DateTime utcTime,

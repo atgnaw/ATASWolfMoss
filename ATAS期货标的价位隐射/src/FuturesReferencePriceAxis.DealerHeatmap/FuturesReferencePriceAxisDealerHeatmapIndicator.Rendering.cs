@@ -32,104 +32,36 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         => DealerColumnPlanner.CalculateColumnWidth(
             configuredAxisWidth,
             region.Width,
-            VisibleDealerColumns);
+            VisibleDealerColumns, RegisteredColumnCatalog);
 
     protected override int GetEditionReservedWidth(int actualAxisWidth)
-        => actualAxisWidth * DealerColumnPlanner.Count(VisibleDealerColumns);
+        => actualAxisWidth * RegisteredColumnCatalog.Count(VisibleDealerColumns);
 
     protected override int GetStatusPanelMaximumWidth()
         => 480;
 
     protected override IReadOnlyList<string> GetEditionStatusLines()
     {
+        var performanceLines = Volatile.Read(ref _performanceLines);
         var visibility = VisibleDealerColumns;
-        var heatmapSnapshot = (visibility & DealerColumnVisibility.Heatmap) != 0
-            ? Volatile.Read(ref _dealerHeatmapSnapshot)
-            : null;
-        var dealerGexSnapshot = (visibility & DealerColumnVisibility.DealerGex) != 0
-            ? Volatile.Read(ref _dealerGexSnapshot)
-            : null;
-        var optionOiSnapshot = (visibility & DealerColumnVisibility.OptionOpenInterest) != 0
-            ? Volatile.Read(ref _optionOpenInterestSnapshot)
-            : null;
-        var optionFlowSnapshot = (visibility & DealerColumnVisibility.OptionPremiumFlow) != 0
-            ? Volatile.Read(ref _optionFlowSnapshot)
-            : null;
-
-        if (TryGetCachedEditionStatusLines(
-                visibility,
-                heatmapSnapshot,
-                dealerGexSnapshot,
-                out var cachedLines))
-        {
+        _statusSnapshots ??= new object?[RegisteredColumns.Length];
+        for (var i = 0; i < RegisteredColumns.Length; i++)
+            _statusSnapshots[i] = (visibility & RegisteredColumns[i].Visibility) == 0 ? null : RegisteredColumns[i].Snapshot(this);
+        var height = ChartInfo?.PriceChartContainer.Region.Height ?? int.MaxValue / 2;
+        var activeLines = _showOptionPremiumFlow ? GetOptionActiveLineCount() : 0;
+        if (TryGetCachedEditionStatusLines(visibility, _statusSnapshots, performanceLines, height, activeLines, out var cachedLines))
             return cachedLines;
-        }
-
-        var lines = new List<string>(8);
-
-        if (heatmapSnapshot is { } heatmapValue)
+        var lines = new List<string>(16);
+        for (var i = 0; i < RegisteredColumns.Length; i++)
+            if (_statusSnapshots[i] is { } snapshot) RegisteredColumns[i].Status(this, lines, snapshot, activeLines);
+        var diagnosticRoom = Math.Max(0, (height - 20) / 19 - 6 - lines.Count);
+        if (diagnosticRoom >= performanceLines.Length) lines.AddRange(performanceLines);
+        else if (diagnosticRoom > 0)
         {
-            var snapshot = heatmapValue;
-            var target = snapshot.Target is { } value
-                ? $"{value.Ticker} {value.TargetExpiration:yyyy-MM-dd}"
-                : "--";
-            var asOf = snapshot.Frame == null
-                ? "--"
-                : FormatUiTime(
-                    DealerSamplingTime.FromBucketStartUtc(snapshot.Frame.MinuteAtUtc),
-                    includeSeconds: false);
-            var next = snapshot.NextAttemptUtc.HasValue
-                ? FormatUiTime(snapshot.NextAttemptUtc, includeSeconds: true)
-                : "--";
-            lines.Add($"Heatmap: {target}；{StateLabel(snapshot.State)}");
-            lines.Add($"Heatmap 数据: {asOf} [{FormatUtcOffsetLabel()}]；节点: {snapshot.Frame?.Cells.Count ?? 0}");
-            lines.Add($"Heatmap 下次: {next}");
-            lines.Add($"Heatmap 信息: {snapshot.Message}");
+            lines.AddRange(performanceLines.Take(diagnosticRoom - 1));
+            lines.Add("PERF: 增高图表查看完整摘要；Record 可保存文件");
         }
-
-        if (dealerGexSnapshot is { } dealerGexValue)
-        {
-            var snapshot = dealerGexValue;
-            var asOf = snapshot.Frame == null
-                ? "--"
-                : FormatUiTime(
-                    DealerSamplingTime.FromBucketStartUtc(snapshot.Frame.SnapshotAtUtc),
-                    includeSeconds: false);
-            var next = snapshot.NextAttemptUtc.HasValue
-                ? FormatUiTime(snapshot.NextAttemptUtc, includeSeconds: true)
-                : "--";
-            lines.Add($"Dealer GEX: {snapshot.Ticker ?? "--"}；{StateLabel(snapshot.State)}");
-            lines.Add($"Dealer GEX 数据: {asOf} [{FormatUtcOffsetLabel()}]；价位: {snapshot.Frame?.Nodes.Count ?? 0}");
-            lines.Add($"Dealer GEX 下次: {next}");
-            lines.Add($"Dealer GEX 信息: {snapshot.Message}");
-        }
-
-        if (optionOiSnapshot is { } optionOi)
-        {
-            lines.Add($"Option OI: {optionOi.Ticker ?? "--"}；{OptionStateLabel(optionOi.Status)}");
-            lines.Add($"Option OI: {optionOi.Expiration:yyyy-MM-dd}；档位 {optionOi.ActiveStrikeCount}/{optionOi.RequestedStrikeCount}");
-            lines.Add($"Option OI 信息: {optionOi.Message}");
-        }
-
-        if (optionFlowSnapshot is { } optionFlow)
-        {
-            var bucket = optionFlow.BucketEndUtc.HasValue
-                ? FormatDealerTime(optionFlow.BucketEndUtc.Value)
-                : "--";
-            lines.Add($"Option Flow: {optionFlow.Ticker ?? "--"}；{OptionStateLabel(optionFlow.Status)}");
-            lines.Add($"Option Flow 数据: {bucket}；{optionFlow.IntervalMinutes}m {optionFlow.BucketMode}");
-            lines.Add($"Option Flow 行情线: {GetOptionActiveLineCount()}/{_ibOptionMarketDataLineBudget}");
-            lines.Add($"Option Flow 信息: {optionFlow.Message}");
-            if (optionFlow.BucketMode == OptionFlowBucketMode.Rolling
-                && optionFlow.AtmLockedUntilUtc.HasValue)
-                lines.Add($"Option Flow ATM: {optionFlow.AtmStrikeUsd}；锁定至 {FormatOptionalOptionTime(optionFlow.AtmLockedUntilUtc)}");
-        }
-
-        return CacheEditionStatusLines(
-            visibility,
-            heatmapSnapshot,
-            dealerGexSnapshot,
-            lines);
+        return CacheEditionStatusLines(visibility, _statusSnapshots, height, activeLines, lines, performanceLines);
     }
 
     protected override void DrawEditionOverlay(
@@ -144,39 +76,11 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var columns = DealerColumnPlanner.Create(
             axisRect.Value.Right,
             axisRect.Value.Width,
-            VisibleDealerColumns);
+            VisibleDealerColumns, RegisteredColumnCatalog);
 
-        if (columns.TryGetLeft(DealerColumnKind.Heatmap, out var heatmapLeft))
-        {
-            DrawHeatmapColumn(
-                context,
-                GetColumnRectangle(axisRect.Value, heatmapLeft),
-                effectiveRatio.Value);
-        }
-
-        if (columns.TryGetLeft(DealerColumnKind.DealerGex, out var dealerGexLeft))
-        {
-            DrawDealerGexColumn(
-                context,
-                GetColumnRectangle(axisRect.Value, dealerGexLeft),
-                effectiveRatio.Value);
-        }
-
-        if (columns.TryGetLeft(DealerColumnKind.OptionOpenInterest, out var optionOiLeft))
-        {
-            DrawOptionOpenInterestColumn(
-                context,
-                GetColumnRectangle(axisRect.Value, optionOiLeft),
-                effectiveRatio.Value);
-        }
-
-        if (columns.TryGetLeft(DealerColumnKind.OptionPremiumFlow, out var optionFlowLeft))
-        {
-            DrawOptionFlowColumn(
-                context,
-                GetColumnRectangle(axisRect.Value, optionFlowLeft),
-                effectiveRatio.Value);
-        }
+        foreach (var column in RegisteredColumns)
+            if (columns.TryGetLeft(column.Kind, out var left))
+                column.Draw(this, context, GetColumnRectangle(axisRect.Value, left), effectiveRatio.Value);
     }
 
     protected override void DrawEditionForeground(
@@ -191,7 +95,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var columns = DealerColumnPlanner.Create(
             axisRect.Value.Right,
             axisRect.Value.Width,
-            VisibleDealerColumns);
+            VisibleDealerColumns, RegisteredColumnCatalog);
 
         if (columns.ColumnCount == 0)
             return;
@@ -203,37 +107,9 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             axisRect.Value.Height);
         DrawMappedPriceLines(context, dataRect);
 
-        if (columns.TryGetLeft(DealerColumnKind.Heatmap, out var heatmapLeft))
-        {
-            DrawHeatmapTooltip(
-                context,
-                GetColumnRectangle(axisRect.Value, heatmapLeft),
-                effectiveRatio.Value);
-        }
-
-        if (columns.TryGetLeft(DealerColumnKind.DealerGex, out var dealerGexLeft))
-        {
-            DrawDealerGexTooltip(
-                context,
-                GetColumnRectangle(axisRect.Value, dealerGexLeft),
-                effectiveRatio.Value);
-        }
-
-        if (columns.TryGetLeft(DealerColumnKind.OptionOpenInterest, out var optionOiLeft))
-        {
-            DrawOptionOpenInterestTooltip(
-                context,
-                GetColumnRectangle(axisRect.Value, optionOiLeft),
-                effectiveRatio.Value);
-        }
-
-        if (columns.TryGetLeft(DealerColumnKind.OptionPremiumFlow, out var optionFlowLeft))
-        {
-            DrawOptionFlowTooltip(
-                context,
-                GetColumnRectangle(axisRect.Value, optionFlowLeft),
-                effectiveRatio.Value);
-        }
+        foreach (var column in RegisteredColumns)
+            if (columns.TryGetLeft(column.Kind, out var left))
+                column.Tooltip(this, context, GetColumnRectangle(axisRect.Value, left), effectiveRatio.Value);
     }
 
     private static Rectangle GetColumnRectangle(Rectangle axisRect, int left)

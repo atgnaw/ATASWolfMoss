@@ -15,48 +15,35 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
     protected override void OnEditionInitialized()
     {
-        _dealerHeatmapLifetimeCancellation = new CancellationTokenSource();
-        RestartDealerHeatmapSchedule();
-        InitializeOptionData();
+        foreach (var source in RegisteredLifecycles) source.Initialize(this);
+        RestartPerformanceDiagnostics();
     }
 
     protected override void OnEditionFinishRecalculate()
     {
-        RestartDealerHeatmapSchedule();
-        RestartOptionDataSchedule();
+        foreach (var source in RegisteredLifecycles) source.Restart(this);
     }
 
     protected override void OnEditionDataProviderChanged()
     {
         if (DataProvider == null)
         {
-            StopDealerHeatmapSchedule();
-            PauseOptionDataSchedule();
+            foreach (var source in RegisteredLifecycles) source.Pause(this);
             return;
         }
 
-        RestartDealerHeatmapSchedule();
-        RestartOptionDataSchedule();
+        foreach (var source in RegisteredLifecycles) source.Restart(this);
     }
 
     protected override void OnEditionConfigurationChanged()
     {
-        Interlocked.Increment(ref _dealerHeatmapGeneration);
-
-        if (IsIndicatorInitialized)
-            RestartDealerHeatmapSchedule();
-
-        RestartOptionDataSchedule();
+        foreach (var source in RegisteredLifecycles) source.Changed(this);
     }
 
     protected override void OnEditionDisposing()
     {
-        StopOptionData();
-        Interlocked.Increment(ref _dealerHeatmapGeneration);
-        StopDealerHeatmapSchedule();
-        _dealerHeatmapLifetimeCancellation?.Cancel();
-        _dealerHeatmapLifetimeCancellation?.Dispose();
-        _dealerHeatmapLifetimeCancellation = null;
+        StopPerformanceDiagnostics();
+        foreach (var source in RegisteredLifecycles) source.Stop(this);
     }
 
     private void RestartDealerHeatmapSchedule()
@@ -117,6 +104,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         long generation,
         CancellationToken cancellationToken)
     {
+        using var diagnosticTask = _performance.TrackTask();
         try
         {
             while (true)

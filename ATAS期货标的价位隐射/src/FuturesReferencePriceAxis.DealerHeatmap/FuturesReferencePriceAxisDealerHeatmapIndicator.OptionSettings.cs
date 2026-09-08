@@ -218,13 +218,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         if (!IsIndicatorInitialized)
             return;
 
-        if (resetGateway)
-            _ = ReleaseOptionGatewayAsync();
-
-        if (resetFlowAggregation)
-            ResetOptionFlowAggregation();
-
-        RestartOptionDataSchedule();
+        RestartOptionDataSchedule(resetGateway, resetFlowAggregation);
         RequestRedraw();
     }
 }

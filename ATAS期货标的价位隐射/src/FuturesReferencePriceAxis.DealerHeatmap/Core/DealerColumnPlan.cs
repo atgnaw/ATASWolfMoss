@@ -23,13 +23,14 @@ public readonly record struct DealerColumnPlan(
     int ColumnWidth,
     DealerColumnVisibility Visibility)
 {
-    public int ColumnCount => DealerColumnPlanner.Count(Visibility);
+    public DealerColumnCatalog Catalog { get; init; } = DealerColumnCatalog.Default;
+    public int ColumnCount => (Catalog ?? DealerColumnCatalog.Default).Count(Visibility);
 
     public int ReservedWidth => ColumnWidth * ColumnCount;
 
     public bool TryGetLeft(DealerColumnKind kind, out int left)
     {
-        if (!DealerColumnPlanner.TryGetVisibleIndex(Visibility, kind, out var index))
+        if (!(Catalog ?? DealerColumnCatalog.Default).TryGetVisibleIndex(Visibility, kind, out var index))
         {
             left = -1;
             return false;
@@ -42,13 +43,6 @@ public readonly record struct DealerColumnPlan(
 
 public static class DealerColumnPlanner
 {
-    private static readonly DealerColumnKind[] OrderedColumns =
-    [
-        DealerColumnKind.Heatmap,
-        DealerColumnKind.DealerGex,
-        DealerColumnKind.OptionOpenInterest,
-        DealerColumnKind.OptionPremiumFlow
-    ];
 
     public static DealerColumnVisibility FromToggles(
         bool showHeatmap,
@@ -67,9 +61,10 @@ public static class DealerColumnPlanner
     public static int CalculateColumnWidth(
         int configuredWidth,
         int regionWidth,
-        DealerColumnVisibility visibility)
+        DealerColumnVisibility visibility,
+        DealerColumnCatalog? catalog = null)
     {
-        var dataColumns = Count(visibility);
+        var dataColumns = (catalog ?? DealerColumnCatalog.Default).Count(visibility);
 
         if (dataColumns == 0)
             return Math.Min(configuredWidth, Math.Max(45, regionWidth / 3));
@@ -82,51 +77,16 @@ public static class DealerColumnPlanner
     public static DealerColumnPlan Create(
         int axisRight,
         int columnWidth,
-        DealerColumnVisibility visibility)
-        => new(axisRight, columnWidth, visibility);
+        DealerColumnVisibility visibility,
+        DealerColumnCatalog? catalog = null)
+        => new(axisRight, columnWidth, visibility) { Catalog = catalog ?? DealerColumnCatalog.Default };
 
     public static int Count(DealerColumnVisibility visibility)
-    {
-        var count = 0;
-
-        foreach (var kind in OrderedColumns)
-        {
-            if ((visibility & ToVisibility(kind)) != 0)
-                count++;
-        }
-
-        return count;
-    }
+        => DealerColumnCatalog.Default.Count(visibility);
 
     public static bool TryGetVisibleIndex(
         DealerColumnVisibility visibility,
         DealerColumnKind kind,
         out int index)
-    {
-        index = 0;
-
-        foreach (var candidate in OrderedColumns)
-        {
-            if ((visibility & ToVisibility(candidate)) == 0)
-                continue;
-
-            if (candidate == kind)
-                return true;
-
-            index++;
-        }
-
-        index = -1;
-        return false;
-    }
-
-    private static DealerColumnVisibility ToVisibility(DealerColumnKind kind)
-        => kind switch
-        {
-            DealerColumnKind.Heatmap => DealerColumnVisibility.Heatmap,
-            DealerColumnKind.DealerGex => DealerColumnVisibility.DealerGex,
-            DealerColumnKind.OptionOpenInterest => DealerColumnVisibility.OptionOpenInterest,
-            DealerColumnKind.OptionPremiumFlow => DealerColumnVisibility.OptionPremiumFlow,
-            _ => DealerColumnVisibility.None
-        };
+        => DealerColumnCatalog.Default.TryGetVisibleIndex(visibility, kind, out index);
 }

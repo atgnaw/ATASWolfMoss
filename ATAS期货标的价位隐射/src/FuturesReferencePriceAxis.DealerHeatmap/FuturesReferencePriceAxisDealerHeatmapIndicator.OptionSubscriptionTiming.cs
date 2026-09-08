@@ -6,6 +6,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 {
     private static readonly TimeSpan OptionFlowPreparationLead = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan OptionFlowCompletionLag = TimeSpan.FromMinutes(1);
+    private IbOptionSubscriptionRequirements _activeOptionRequirements;
 
     private async Task MaintainOptionSubscriptionAsync(CancellationToken cancellationToken)
     {
@@ -31,20 +32,34 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
         }
 
-        if (_optionSubscription != null)
-            return;
-
         var requirements = new IbOptionSubscriptionRequirements(
-            _showOptionOpenInterest,
+            _showOptionOpenInterest && HasMissingOpenInterest(),
             _optionFlowTradeScope == OptionFlowTradeScope.RegularTrades,
             _optionFlowTradeScope == OptionFlowTradeScope.AllTimeAndSales);
+        if (_optionSubscription != null)
+        {
+            var ids = contracts.Select(static c => c.ConId).Order().ToArray();
+            if (!_optionSubscription.ContractIds.Order().SequenceEqual(ids) || _activeOptionRequirements != requirements)
+            {
+                await _optionSubscription.UpdateAsync(contracts, requirements,
+                    _ibOptionMarketDataLineBudget, cancellationToken).ConfigureAwait(false);
+                _activeOptionRequirements = requirements;
+            }
+            return;
+        }
         var gateway = GetOrCreateOptionGateway();
         lock (_optionDataSync)
+        {
             _rollingFlow.Resume(CurrentUtcTime());
+            _flowCoverageStartUtc = CurrentUtcTime();
+        }
         var subscription = await gateway.SubscribeAsync(
                 contracts,
                 requirements,
-                OnOptionMarketData,
+                update =>
+                {
+                    OnScheduledOptionMarketData(update, cancellationToken);
+                },
                 _ibOptionMarketDataLineBudget,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -59,6 +74,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             _flowCoverageStartUtc = CurrentUtcTime();
 
         _optionSubscription = subscription;
+        _activeOptionRequirements = requirements;
     }
 
     private static bool IsInsideOptionFlowSubscriptionWindow(

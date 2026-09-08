@@ -315,7 +315,7 @@ internal static class OptionFeatureTests
 
         var tradingHours =
             "20260827:0930-20260827:1600;20260827:2000-20260828:1700";
-        Equal(1, IbTradingHoursParser.ParseEastern(tradingHours, false).Count);
+        Equal(2, IbTradingHoursParser.ParseEastern(tradingHours, false).Count);
         Equal(2, IbTradingHoursParser.ParseEastern(tradingHours, true).Count);
         var central = IbTradingHoursParser.Parse(
             "20260827:0830-20260827:1500",
@@ -343,7 +343,7 @@ internal static class OptionFeatureTests
                 receivedUtc,
                 new Dictionary<long, long> { [101] = 0, [102] = 2_500 });
             var loaded = OptionOpenInterestCache.LoadSnapshot(
-                directory, "qqq", expiration);
+                directory, "qqq", expiration, receivedUtc);
             Equal(receivedUtc, loaded.ReceivedUtc);
             Equal(2, loaded.Values.Count);
             Equal(0L, loaded.Values[101]);

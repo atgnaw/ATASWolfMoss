@@ -1,3 +1,4 @@
+// Source-shared module: compiled privately into each consuming plugin.
 namespace WolfMoss.ATAS.PriceMapping.Core;
 
 using System.Globalization;
