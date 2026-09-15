@@ -11,7 +11,11 @@ using System.Threading.Channels;
 
 // Only explicitly allowlisted configuration is accepted: never a settings object / exception.
 public sealed record PerformanceRunMetadata(string BuildId, string BucketMode, int IntervalMinutes,
-    int StrikeLevels, int LineBudget, bool ShowOi, bool ShowFlow);
+    int StrikeLevels, int LineBudget, bool ShowOi, bool ShowFlow)
+{
+    public int SchemaVersion => 5;
+    public string TradeScope { get; init; } = "UNKNOWN";
+}
 
 public sealed class PerformanceDiagnosticRecorder : IAsyncDisposable
 {
@@ -135,12 +139,26 @@ public sealed class PerformanceDiagnosticRecorder : IAsyncDisposable
         if (used + bytes > DirectoryLimit) throw new IOException("Diagnostic directory limit.");
     }
 
-    public const string Header = "utc,render_count,render_mean_ms,render_p95_upper_ms,publish_count,publish_mean_ms,publish_p95_upper_ms,callback_mean_ms,callback_p95_upper_ms,events_per_sec,gateway_sends_per_sec,gateway_cancels_per_sec,lines,budget,consumers,cached_samples,oi_values,gateway_replacements,background_tasks,diagnostic_samples_dropped,last_error_code,event_queue_length,market_data_gaps";
-    public static string ToCsv(PerformanceSnapshot s) => string.Join(",", new object[]
+    public const string Header = "utc,render_count,render_mean_ms,render_p95_upper_ms,publish_count,publish_mean_ms,publish_p95_upper_ms,callback_mean_ms,callback_p95_upper_ms,events_per_sec,gateway_sends_per_sec,gateway_cancels_per_sec,lines,budget,consumers,cached_samples,oi_values,gateway_replacements,background_tasks,diagnostic_samples_dropped,last_error_code,event_queue_length,market_data_gaps,atas_utc,atas_offset_seconds,source_utc,received_utc,source_age_seconds,bucket_start_utc,bucket_end_utc,coverage_start_utc,clock_jumps,clock_adjustment_seconds,flow_accepted,flow_rejected,flow_future,flow_before_coverage,flow_outside_ladder,flow_outside_session,flow_out_of_order,flow_invalid,flow_rolling_boundary,flow_late,last_disposition,ib_invalid_samples,last_error_origin,last_raw_error_code,last_error_utc,flow_ticker,flow_expiration,flow_duplicates,flow_observation_gaps,last_future_source_utc,last_future_received_utc,last_future_lead_ms,max_future_lead_ms"
+        + ",flow_buffered,flow_buffer_overflow,future_pending,future_buffered,future_released,future_discarded,future_buffer_max_lead_ms";
+    private static string Stamp(DateTime? utc) => utc?.ToString("O", CultureInfo.InvariantCulture) ?? "";
+    public static string ToCsv(PerformanceSnapshot s) => string.Join(",", new object?[]
     { s.Utc.ToString("O", CultureInfo.InvariantCulture), s.Render.Count, s.Render.MeanMs, s.Render.P95UpperMs,
       s.Publish.Count, s.Publish.MeanMs, s.Publish.P95UpperMs, s.Callback.MeanMs, s.Callback.P95UpperMs,
       s.EventsPerSecond, s.SendsPerSecond, s.CancelsPerSecond, s.Lines, s.Budget, s.Consumers,
-      s.CachedSamples, s.OiValues, s.GatewayReplacements, s.BackgroundTasks, s.DiagnosticSamplesDropped, s.LastErrorCode, "", "" }
+      s.CachedSamples, s.OiValues, s.GatewayReplacements, s.BackgroundTasks, s.DiagnosticSamplesDropped, s.LastErrorCode, "", "",
+      Stamp(s.AtasUtc), (s.AtasUtc - s.Utc)?.TotalSeconds, Stamp(s.Reception?.SourceUtc), Stamp(s.Reception?.ReceivedUtc),
+      (s.Utc - s.Reception?.SourceUtc)?.TotalSeconds, Stamp(s.BucketStartUtc), Stamp(s.BucketEndUtc), Stamp(s.CoverageStartUtc),
+      s.ClockJumps, s.ClockAdjustmentSeconds, s.Reception?.Accepted, s.Reception?.Rejected, s.Reception?.Future,
+      s.Reception?.BeforeCoverage, s.Reception?.OutsideLadder, s.Reception?.OutsideSession, s.Reception?.OutOfOrder,
+      s.Reception?.Invalid, s.Reception?.RollingBoundary, s.Reception?.Late, s.Reception?.LastDisposition,
+      s.InvalidIbSamples, s.LastErrorOrigin, s.LastRawErrorCode, Stamp(s.LastErrorUtc),
+      s.FlowTicker is "QQQ" or "SPX" ? s.FlowTicker : "", s.FlowExpiration?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+      s.Reception?.Duplicates, s.Reception?.ObservationGaps,
+      Stamp(s.Reception?.LastFutureSourceUtc), Stamp(s.Reception?.LastFutureReceivedUtc),
+      s.Reception?.LastFutureLeadMilliseconds, s.Reception?.MaxFutureLeadMilliseconds,
+      s.Reception?.Buffered, s.Reception?.BufferOverflow, s.FutureBuffer?.Pending, s.FutureBuffer?.Buffered,
+      s.FutureBuffer?.Released, s.FutureBuffer?.Discarded, s.FutureBuffer?.MaxLeadMilliseconds }
         .Select(value => Convert.ToString(value, CultureInfo.InvariantCulture)));
 
     public static void Prune(string directory, DateTime utc, ISet<string>? protectedPaths = null, int reservedBytes = 0)

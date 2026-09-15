@@ -1,6 +1,8 @@
 // Source-shared module: compiled privately into each consuming plugin.
 namespace WolfMoss.ATAS.PriceMapping;
 
+using WolfMoss.ATAS.PriceMapping.Core;
+
 internal static class IbOptionGatewayPool
 {
     private static readonly object Sync = new();
@@ -76,17 +78,32 @@ internal static class IbOptionGatewayPool
         private readonly string _key;
         private SharedClient? _shared;
         internal Lease(string key, SharedClient shared) { _key = key; _shared = shared; }
+        public string ConnectionKey => _key;
         public IIbOptionGatewayClient Client => Volatile.Read(ref _shared)?.Client
             ?? throw new ObjectDisposedException(nameof(Lease));
         public int SetFlowDemand(string ticker, int levels, int budget)
             => Client is ReflectionIbOptionGatewayClient client
                 ? client.FlowBudget.Update(_owner, ticker, levels, budget) : levels;
 
+        public OptionTickerCoordinator.Plan Coordinate(string ticker, DateOnly expiration,
+            decimal spot, DateTime quoteUtc, int minutes, bool flow, DateTime now, DateTime anchor, int levels)
+            => ((ReflectionIbOptionGatewayClient)Client).Tickers.Update(_owner, ticker, expiration,
+                spot, quoteUtc, minutes, flow, now, anchor, levels);
+        public int ReceiverLevels(string ticker) => ((ReflectionIbOptionGatewayClient)Client).FlowBudget.AllocatedLevels(ticker);
+        public bool CommitRange(OptionTickerCoordinator.Plan plan, IReadOnlyList<OptionContractDescriptor> contracts, int receiverLevels)
+        {
+            var client = (ReflectionIbOptionGatewayClient)Client;
+            var allocation = client.FlowBudget.AllocatedLevels(plan.Ticker);
+            if (receiverLevels != Math.Min(plan.RequestedLevels, allocation > 0 ? allocation : plan.RequestedLevels)) return false;
+            return client.Tickers.Commit(plan, () => client.ApplyTickerRange(plan.Ticker, plan.Expiration, contracts));
+        }
+
         public ValueTask DisposeAsync()
         {
             var shared = Interlocked.Exchange(ref _shared, null);
             if (shared == null) return ValueTask.CompletedTask;
-            if (shared.Client is ReflectionIbOptionGatewayClient client) client.FlowBudget.Remove(_owner);
+            if (shared.Client is ReflectionIbOptionGatewayClient client)
+            { client.FlowBudget.Remove(_owner); client.Tickers.Remove(_owner); }
             lock (Sync)
             {
                 if (--shared.ReferenceCount != 0) return ValueTask.CompletedTask;

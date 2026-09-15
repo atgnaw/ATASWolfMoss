@@ -15,6 +15,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         lock (_optionDataSync)
         {
+            EnsureSharedFlow(RealtimeUtcNow());
             contracts = _activeOptionContracts.ToArray();
             ticker = _activeOptionTicker;
         }
@@ -23,17 +24,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                               && contracts.Count > 0
                               && ticker != null
                               && IsInsideOptionFlowSubscriptionWindow(
-                                  CurrentUtcTime(), ticker, contracts);
+                                  RealtimeUtcNow(), ticker, contracts);
 
         if (!shouldSubscribe)
         {
+            lock (_optionDataSync) _sharedFlow?.Observe(false, RealtimeUtcNow());
             _optionSubscription?.Dispose();
             _optionSubscription = null;
             return;
         }
 
         var requirements = new IbOptionSubscriptionRequirements(
-            _showOptionOpenInterest && HasMissingOpenInterest(),
+            true, // Daily OI on existing Flow lines; never re-subscribe just to toggle the OI column.
             _optionFlowTradeScope == OptionFlowTradeScope.RegularTrades,
             _optionFlowTradeScope == OptionFlowTradeScope.AllTimeAndSales);
         if (_optionSubscription != null)
@@ -45,13 +47,17 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     _ibOptionMarketDataLineBudget, cancellationToken).ConfigureAwait(false);
                 _activeOptionRequirements = requirements;
             }
+            lock (_optionDataSync) _sharedFlow?.Observe(true, RealtimeUtcNow());
+            if (_optionGatewayLease?.Client is ReflectionIbOptionGatewayClient connected)
+                await connected.RepairSubscriptionsAsync(RealtimeUtcNow(), _ibOptionMarketDataLineBudget, cancellationToken).ConfigureAwait(false);
             return;
         }
         var gateway = GetOrCreateOptionGateway();
         lock (_optionDataSync)
         {
-            _rollingFlow.Resume(CurrentUtcTime());
-            _flowCoverageStartUtc = CurrentUtcTime();
+            _sharedFlow?.Observe(true, RealtimeUtcNow());
+            _rollingFlow.Resume(RealtimeUtcNow());
+            _flowCoverageStartUtc = RealtimeUtcNow();
         }
         var subscription = await gateway.SubscribeAsync(
                 contracts,
@@ -71,7 +77,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
 
         if (_flowCoverageStartUtc == DateTime.MinValue)
-            _flowCoverageStartUtc = CurrentUtcTime();
+            _flowCoverageStartUtc = RealtimeUtcNow();
 
         _optionSubscription = subscription;
         _activeOptionRequirements = requirements;

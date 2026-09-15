@@ -31,6 +31,8 @@ internal static class IbCoordinationTests
         public ConcurrentDictionary<int, byte> Lines { get; } = new();
         public int MaximumLines;
         public bool FailCancel;
+        public bool FailDisconnect;
+        public int DisconnectCalls;
         public void reqMktData(int id, object contract, string ticks, bool snapshot, bool regulatory, object options)
         {
             Lines[id] = 0; MaximumLines = Math.Max(MaximumLines, Lines.Count);
@@ -41,7 +43,13 @@ internal static class IbCoordinationTests
             if (FailCancel) throw new IOException("Simulated socket send failure");
             Lines.TryRemove(id, out _); Operations.Enqueue(("cancel", id, ""));
         }
-        public void eDisconnect() { IsConnected = false; Lines.Clear(); }
+        public void eDisconnect(bool resetState = true)
+        {
+            DisconnectCalls++;
+            if (FailDisconnect) throw new IOException("Simulated disconnect failure");
+            if (!resetState) throw new InvalidOperationException("Expected resetState=true");
+            IsConnected = false; Lines.Clear();
+        }
     }
     internal static (ReflectionIbOptionGatewayClient Client, FakeSocket Socket) Connected()
     {
@@ -253,6 +261,7 @@ internal static class IbCoordinationTests
         var pro = PerformanceDiagnosticTests.LoadPro();
         var type = pro.GetType("WolfMoss.ATAS.PriceMapping.FuturesReferencePriceAxisDealerHeatmapIndicator")!;
         var indicator = RuntimeHelpers.GetUninitializedObject(type);
+        Set(indicator, "_realtimeClock", TimeProvider.System);
         Set(indicator, "_optionScheduleSync", new object());
         using var lifetime = new CancellationTokenSource();
         Set(indicator, "_optionLifetimeCancellation", lifetime);

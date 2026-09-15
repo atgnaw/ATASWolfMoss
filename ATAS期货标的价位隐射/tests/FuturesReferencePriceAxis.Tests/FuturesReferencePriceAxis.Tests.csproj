@@ -11,6 +11,14 @@
 
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="FutureBufferTests.cs" />
+    <Compile Include="StatusUiTests.cs" />
+    <Compile Include="StabilityBatchOneTests.cs" />
+    <Compile Include="TickerCoordinationTests.cs" />
+    <Compile Include="SharedOptionFlowTests.cs" />
+    <Compile Include="IbDisconnectTests.cs" />
+    <Compile Include="StabilityBatchFourTests.cs" />
+    <Compile Include="SharedFlowBaseline.cs" />
     <Compile Include="OptionFeatureTests.cs" />
     <Compile Include="OptionRollingFlowTests.cs" />
     <Compile Include="PerformanceDiagnosticTests.cs" />

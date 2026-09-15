@@ -38,12 +38,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         => actualAxisWidth * RegisteredColumnCatalog.Count(VisibleDealerColumns);
 
     protected override int GetStatusPanelMaximumWidth()
-        => 480;
+        => _statusPanelWidth;
 
     protected override IReadOnlyList<string> GetEditionStatusLines()
     {
-        var performanceLines = Volatile.Read(ref _performanceLines);
-        var visibility = VisibleDealerColumns;
+        var performanceLines = _showPerformanceStatus ? Volatile.Read(ref _performanceLines) : Array.Empty<string>();
+        var visibility = VisibleDealerColumns & StatusColumnVisibility;
         _statusSnapshots ??= new object?[RegisteredColumns.Length];
         for (var i = 0; i < RegisteredColumns.Length; i++)
             _statusSnapshots[i] = (visibility & RegisteredColumns[i].Visibility) == 0 ? null : RegisteredColumns[i].Snapshot(this);
@@ -54,13 +54,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var lines = new List<string>(16);
         for (var i = 0; i < RegisteredColumns.Length; i++)
             if (_statusSnapshots[i] is { } snapshot) RegisteredColumns[i].Status(this, lines, snapshot, activeLines);
-        var diagnosticRoom = Math.Max(0, (height - 20) / 19 - 6 - lines.Count);
-        if (diagnosticRoom >= performanceLines.Length) lines.AddRange(performanceLines);
-        else if (diagnosticRoom > 0)
-        {
-            lines.AddRange(performanceLines.Take(diagnosticRoom - 1));
-            lines.Add("PERF: 增高图表查看完整摘要；Record 可保存文件");
-        }
+        lines.AddRange(performanceLines);
         return CacheEditionStatusLines(visibility, _statusSnapshots, height, activeLines, lines, performanceLines);
     }
 

@@ -7,6 +7,12 @@ using System.Net.Http.Headers;
 
 using WolfMoss.ATAS.PriceMapping.Core;
 
+if (args.Contains("--shared-flow-baseline", StringComparer.OrdinalIgnoreCase))
+{
+    SharedFlowBaseline.Run();
+    return;
+}
+
 if (args.Contains("--publication-baseline", StringComparer.OrdinalIgnoreCase))
 {
     PerformanceBaseline.Run(publication: true);
@@ -57,6 +63,44 @@ if (args.Contains("--live-spx-marketwatch", StringComparer.OrdinalIgnoreCase))
 
 var tests = new (string Name, Action Run)[]
 {
+    ("Future buffering eligibility, order and shared dedup", FutureBufferTests.EligibilityOrderAndDedup),
+    ("Future buffering fixed/rolling buckets and sessions", FutureBufferTests.BucketsAndSessions),
+    ("Future buffering retirement, reconnect, clock and limits", FutureBufferTests.BoundariesAndLimits),
+    ("Stability future rejection millisecond evidence and CSV", StabilityBatchOneTests.FutureRejectionEvidence),
+    ("Status UI settings and subscription isolation", StatusUiTests.SettingsAndIsolation),
+    ("Status UI category combinations and caches", StatusUiTests.CategoryCombinations),
+    ("Status UI width, wrapping and independent footer", StatusUiTests.WidthAndPlacement),
+    ("Status UI fixed/rolling countdown boundaries", StatusUiTests.CountdownBoundaries),
+    ("Status UI countdown lifecycle", StatusUiTests.CountdownLifecycle),
+    ("Stability OI toggles preserve Flow generation", StabilityBatchFourTests.OiToggleDoesNotRestartFlow),
+    ("Stability OI all-zero quality warning", StabilityBatchFourTests.OiZeroQuality),
+    ("Stability per-contract health and delayed recovery", StabilityBatchFourTests.ContractHealthIsolation),
+    ("Stability bounded subscription recovery", StabilityBatchFourTests.BoundedSubscriptionRecovery),
+    ("IB official optional disconnect signature", IbDisconnectTests.OfficialSignature),
+    ("IB repeated instrument socket retirement", IbDisconnectTests.RepeatedInstrumentRetirement),
+    ("IB failed disconnect preserves reservation", IbDisconnectTests.FailedDisconnectKeepsReservation),
+    ("Shared Flow identity and final release", SharedOptionFlowTests.IdentityAndLifetime),
+    ("Shared Flow duplicate callbacks and publication ordering", SharedOptionFlowTests.DedupAndPublicationOrdering),
+    ("Shared Flow fixed intervals and trading segments", SharedOptionFlowTests.FixedIntervalsAndSegments),
+    ("Shared Flow fixed receiving gaps and reentry", SharedOptionFlowTests.FixedReceptionGaps),
+    ("Shared Flow rolling intervals and reentry", SharedOptionFlowTests.RollingIntervalsAndReentry),
+    ("Shared Flow observation gaps and new settings groups", SharedOptionFlowTests.ObservationGapsAndNewGroups),
+    ("Shared Flow clock correction and bounded storage", SharedOptionFlowTests.ClockResetAndBoundedStorage),
+    ("Shared Flow actual indicator callbacks and publishers", SharedOptionFlowTests.ActualPublisherUsesSharedBook),
+    ("Shared Flow hot-path allocations and common receiver metadata", SharedOptionFlowTests.SharedHotPathAllocation),
+    ("Shared Flow exact rejection reasons and allocation-free configuration", SharedOptionFlowTests.DetailedRejectionsAndFastConfiguration),
+    ("Ticker common cadence, mixed intervals and stale epoch", TickerCoordinationTests.Cadence),
+    ("Ticker master freshness, failover and identity isolation", TickerCoordinationTests.MasterAndIsolation),
+    ("Ticker shared maximum ladder and fair budgets", TickerCoordinationTests.Budget),
+    ("Ticker fenced subscriptions, stale followers and release", TickerCoordinationTests.FencedSubscriptions),
+    ("Stability clock adjustments vs monotonic elapsed time", StabilityBatchOneTests.ClockDiscontinuities),
+    ("Stability actual UTC publication and future cache rejection", StabilityBatchOneTests.ActualClockAndFutureCache),
+    ("Stability actual fixed/rolling rebase after clock adjustment", StabilityBatchOneTests.ActualClockRebase),
+    ("Stability reception reasons, zero-allocation counters and safe CSV", StabilityBatchOneTests.DiagnosticReasonsAndCsv),
+    ("Stability actual sample acceptance and rejection diagnostics", StabilityBatchOneTests.ActualReceptionReasons),
+    ("Stability shared cancellation and late faults", StabilityBatchOneTests.CanceledWaitersAndLateFailure),
+    ("Stability normal disposal and forced-GC unobserved faults", StabilityBatchOneTests.DisposalAndGc),
+    ("Stability actual IB error origins and invalid timestamp counters", StabilityBatchOneTests.GatewayErrorOrigins),
     ("Instrument pair resolution", TestPairResolution),
     ("Mapping math", TestMappingMath),
     ("Minute close matching", TestMinuteClose),
@@ -152,6 +196,12 @@ var tests = new (string Name, Action Run)[]
 };
 
 var failures = new List<string>();
+if (args.Contains("--stability-tests", StringComparer.OrdinalIgnoreCase))
+    tests = tests.Where(test => test.Run.Method.DeclaringType == typeof(StabilityBatchOneTests)).ToArray();
+if (args.Contains("--batch-four-tests", StringComparer.OrdinalIgnoreCase))
+    tests = tests.Where(test => test.Run.Method.DeclaringType == typeof(StabilityBatchFourTests)).ToArray();
+if (args.Contains("--shared-flow-tests", StringComparer.OrdinalIgnoreCase))
+    tests = tests.Where(test => test.Run.Method.DeclaringType == typeof(SharedOptionFlowTests)).ToArray();
 
 if (args.Contains("--ib-module-tests", StringComparer.OrdinalIgnoreCase))
     tests = tests.Where(test => test.Run.Method.DeclaringType == typeof(ModuleReuseTests)).ToArray();
@@ -1502,7 +1552,7 @@ static void TestEditionAssemblies()
         var standard = AssemblyLoadContext.Default.LoadFromAssemblyPath(standardPath);
         var pro = AssemblyLoadContext.Default.LoadFromAssemblyPath(proPath);
         Equal(new Version(1, 1, 0, 0), standard.GetName().Version!);
-        Equal(new Version(2, 2, 0, 0), pro.GetName().Version!);
+        Equal(new Version(2, 3, 0, 0), pro.GetName().Version!);
 
 #if !DEBUG
         var proDirectory = Path.GetDirectoryName(proPath)!;

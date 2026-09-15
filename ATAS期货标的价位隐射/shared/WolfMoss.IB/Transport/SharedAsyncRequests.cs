@@ -10,7 +10,7 @@ internal sealed class SharedAsyncRequests<TKey, TValue> where TKey : notnull
     public async Task<TValue> GetAsync(TKey key, Func<Task<TValue>> factory, CancellationToken waiter)
     {
         waiter.ThrowIfCancellationRequested();
-        var entry = _requests.GetOrAdd(key, _ => new Lazy<Task<TValue>>(factory));
+        var entry = _requests.GetOrAdd(key, _ => new Lazy<Task<TValue>>(() => IbTaskOwnership.Own(factory())));
         Task<TValue> task;
         try { task = entry.Value; }
         catch

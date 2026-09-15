@@ -41,6 +41,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var stale = contracts.Count(contract => _optionOpenInterest.ContainsKey(contract.ConId)
             && NeedsOiConfirmation(contract.ConId));
         var coverage = OptionContractCoverage.Calculate(strikes, contracts);
+        var allZero = populated == contracts.Count && coverage.IsComplete && populated > 0
+            && contracts.All(c => _optionOpenInterest[c.ConId] == 0);
         var status = populated == 0 ? OptionDataStatus.WaitingOpenInterest
             : stale == populated ? OptionDataStatus.Frozen
             : stale > 0 ? OptionDataStatus.Partial
@@ -50,6 +52,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             populated > 0 ? received : DateTime.MinValue,
             $"OI {populated}/{contracts.Count}；合约 {coverage.ResolvedContractCount}/{coverage.ExpectedContractCount}"
                 + (stale > 0 ? $"；旧值待确认 {stale}" : "；IB 接收值（非清算发布日期）")
+                + (allZero ? "；全部为 0，请核对上游日 OI（非缺失值）" : string.Empty)
                 + (_oiCacheWriteFailed ? "；本地缓存写入失败，30 秒后重试" : string.Empty),
             _optionStrikeLevels, coverage.ActiveStrikeCount) { ReceivedByStrike = receipts };
     }

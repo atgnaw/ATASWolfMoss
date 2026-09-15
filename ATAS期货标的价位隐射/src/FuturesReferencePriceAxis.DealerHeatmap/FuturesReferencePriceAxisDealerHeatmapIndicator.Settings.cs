@@ -71,7 +71,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     null,
                     null,
                     DealerHeatmapState.Waiting,
-                    CurrentUtcTime(),
+                    RealtimeUtcNow(),
                     null,
                     "API key 已更新，等待重新连接",
                     false));
@@ -79,7 +79,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     null,
                     null,
                     DealerGexState.Waiting,
-                    CurrentUtcTime(),
+                    RealtimeUtcNow(),
                     null,
                     "API key 已更新，等待重新连接",
                     false));

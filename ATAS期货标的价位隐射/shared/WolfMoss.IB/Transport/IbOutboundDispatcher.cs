@@ -26,12 +26,12 @@ internal sealed class IbOutboundDispatcher : IAsyncDisposable
         _perSecond = perSecond;
         _queue = Channel.CreateBounded<Work>(new BoundedChannelOptions(capacity)
         { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
-        _worker = Task.Run(RunAsync);
+        _worker = IbTaskOwnership.Own(Task.Run(RunAsync));
     }
 
     public Task Enqueue(Action send, CancellationToken token = default, Func<bool>? isCurrent = null)
     {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = IbTaskOwnership.Completion();
         if (!_queue.Writer.TryWrite(new Work(send, isCurrent, token, completion)))
             completion.TrySetException(new InvalidOperationException("IB outbound queue unavailable"));
         return completion.Task;

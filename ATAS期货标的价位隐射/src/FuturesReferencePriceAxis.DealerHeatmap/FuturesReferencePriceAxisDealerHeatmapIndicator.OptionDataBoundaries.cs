@@ -25,21 +25,57 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
            || received < _oiConfirmationStartUtc;
 
     private bool AcceptFixedSample(OptionCumulativeSample sample, DateTime received)
+        => ClassifyFixedSample(sample, received) == FlowSampleDisposition.Accepted;
+
+    private FlowSampleDisposition ClassifyFixedSample(OptionCumulativeSample sample, DateTime received)
     {
-        if (sample.SampleUtc < _flowCoverageStartUtc || sample.SampleUtc > received || _activeOptionTicker == null) return false;
+        if (!sample.HasValidCumulativeValue()) return FlowSampleDisposition.Invalid;
+        if (sample.SampleUtc > received) return FlowSampleDisposition.FutureSource;
+        if (sample.SampleUtc < _flowCoverageStartUtc) return FlowSampleDisposition.BeforeCoverage;
+        if (_activeOptionTicker == null) return FlowSampleDisposition.OutsideLadder;
         var active = false;
         for (var i = 0; i < _activeOptionContracts.Count; i++)
             if (_activeOptionContracts[i].ConId == sample.ConId) { active = true; break; }
-        if (!active) return false;
+        if (!active) return FlowSampleDisposition.OutsideLadder;
         var segments = GetCachedFlowSegments(_activeOptionTicker, _activeOptionContracts);
-        for (var i = 0; i < segments.Count; i++) if (segments[i].Contains(sample.SampleUtc)) return true;
-        return false;
+        for (var i = 0; i < segments.Count; i++)
+            if (segments[i].Contains(sample.SampleUtc)) return FlowSampleDisposition.Accepted;
+        return FlowSampleDisposition.OutsideSession;
+    }
+
+    private void ReceiveFlowSample(OptionCumulativeSample sample, DateTime received, OptionFlowTradeScope scope)
+    {
+        FlowSampleDisposition disposition;
+        if (_sharedFlow != null)
+        {
+            if (scope != _sharedFlow.Key.Scope) return;
+            disposition = _sharedFlow.Book.ReceiveDetailed(sample, received);
+        }
+        else if (_optionFlowBucketMode == OptionFlowBucketMode.Rolling)
+        {
+            disposition = _rollingFlow.AddDetailed(sample, scope, received);
+        }
+        else
+        {
+            disposition = ClassifyFixedSample(sample, received);
+            var destination = scope == OptionFlowTradeScope.RegularTrades ? _regularTradeSamples : _allTradeSamples;
+            if (disposition == FlowSampleDisposition.Accepted)
+            {
+                if (destination.TryGetValue(sample.ConId, out var samples) && samples.Count > 0
+                    && sample.SampleUtc < samples[^1].SampleUtc) disposition = FlowSampleDisposition.OutOfOrder;
+                else AddCumulativeSample(destination, sample);
+            }
+        }
+        if (_performance.Enabled && scope == _optionFlowTradeScope)
+            _flowReception.Record(sample.SampleUtc, received, disposition,
+                Volatile.Read(ref _optionFlowSnapshot).BucketEndUtc);
     }
 
     private void SuspendOptionObservation(DateTime nowUtc)
     {
         lock (_optionDataSync)
         {
+            _sharedFlow?.Observe(false, nowUtc);
             _rollingFlow.Suspend(nowUtc);
             // Keep the last published frame, but never subtract across an unobserved connection gap.
             _regularTradeSamples.Clear();
@@ -51,6 +87,8 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     private bool TransitionOptionTarget(string ticker, DateOnly expiration, DateTime nowUtc, string? cacheDirectory = null)
     {
         if (_activeOptionTicker == ticker && _activeOptionExpiration == expiration) return false;
+        Volatile.Write(ref _flowCountdownContext, null);
+        ReleaseSharedFlow();
         SaveOpenInterestCacheIfNeeded();
         Interlocked.Exchange(ref _optionSubscription, null)?.Dispose();
         lock (_optionDataSync)
@@ -70,6 +108,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             _optionOiReceivedByContract.Clear();
             _optionOpenInterestReceivedUtc = DateTime.MinValue;
             _optionDataIsDelayed = false;
+            _optionInputHealth = null;
             _oiCacheDirty = _oiCacheWriteFailed = false;
             _nextOiCacheSaveUtc = DateTime.MinValue;
             _oiRevision++;

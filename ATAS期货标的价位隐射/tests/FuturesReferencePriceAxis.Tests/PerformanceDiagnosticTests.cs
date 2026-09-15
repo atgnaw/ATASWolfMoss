@@ -92,7 +92,7 @@ internal static class PerformanceDiagnosticTests
                 var lines = File.ReadAllLines(file);
                 Check(lines.Length == 2 && lines[0].Split(',').Length == lines[1].Split(',').Length,
                     "CSV shape / graceful flush");
-                Check(lines[1].EndsWith(",,"), "Unknown metrics stay empty, never false zero");
+                Check(lines[1].Split(',')[21] == "" && lines[1].Split(',')[22] == "", "Unknown metrics stay empty, never false zero");
             }
             foreach (var file in Directory.GetFiles(dir, "*.json"))
             {
@@ -158,6 +158,9 @@ internal static class PerformanceDiagnosticTests
         void Set(string name, object value) => type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(indicator, value);
         Set("_performance", collector);
         Set("_optionDataSync", new object());
+        Set("_realtimeClock", TimeProvider.System);
+        Set("_flowClockGuard", Activator.CreateInstance(assembly.GetType("WolfMoss.ATAS.PriceMapping.Core.RealtimeClockGuard", true)!)!);
+        Set("_flowReception", Activator.CreateInstance(assembly.GetType("WolfMoss.ATAS.PriceMapping.Core.FlowReceptionDiagnostics", true)!)!);
         var updateType = assembly.GetType("WolfMoss.ATAS.PriceMapping.IbOptionMarketDataUpdate", true)!;
         // Default update is rejected by target guard, but its processing time must still be counted.
         var callback = type.GetMethod("OnOptionMarketData", BindingFlags.Instance | BindingFlags.NonPublic)!;

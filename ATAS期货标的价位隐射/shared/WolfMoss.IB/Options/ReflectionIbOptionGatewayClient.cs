@@ -14,12 +14,14 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
     private readonly long _diagnosticInstance = Interlocked.Increment(ref _diagnosticNextInstance);
     private long _diagnosticSends;
     private long _diagnosticCancels;
+    private long _invalidRealtimeSamples;
     private int _diagnosticLines;
     private int _diagnosticConsumers;
     public IbPerformanceSnapshot PerformanceSnapshot => new(_diagnosticInstance,
         Interlocked.Read(ref _diagnosticSends), Interlocked.Read(ref _diagnosticCancels),
         Volatile.Read(ref _diagnosticLines), Volatile.Read(ref _diagnosticConsumers),
-        (_readerLoop is { IsCompleted: false } ? 1 : 0) + (_outbound.IsRunning ? 1 : 0));
+        (_readerLoop is { IsCompleted: false } ? 1 : 0) + (_outbound.IsRunning ? 1 : 0))
+        { InvalidRealtimeSamples = Interlocked.Read(ref _invalidRealtimeSamples) };
 
     // Called only where the existing subscription mutation lock is already held.
     private void UpdateDiagnosticOccupancy()
@@ -46,7 +48,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
     private readonly SharedAsyncRequests<OptionContractKey, OptionContractDescriptor?> _contractFlights = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource _connected =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+        IbTaskOwnership.Completion();
     private object? _client;
     private object? _reader;
     private object? _signal;
@@ -98,7 +100,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         if (IsConnected && _connected.Task.IsCompletedSuccessfully)
             return;
 
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
 
         try
@@ -107,12 +109,12 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             lock (_sync)
             {
                 ThrowIfDisposed();
-                initialization = _initialization ??= Task.Run(async () =>
+                initialization = _initialization ??= IbTaskOwnership.Own(Task.Run(async () =>
                 {
                     await _previousDisposal.ConfigureAwait(false);
                     _lifetime.Token.ThrowIfCancellationRequested();
                     InitializeSocket();
-                });
+                }));
             }
             await initialization.WaitAsync(timeout.Token).ConfigureAwait(false);
             await _connected.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
@@ -124,7 +126,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
                     "IB Gateway Socket 已关闭，正在重建连接");
             }
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && !_lifetime.IsCancellationRequested)
         {
             Interlocked.Exchange(ref _connectionFaulted, 1);
             throw new IbOptionGatewayException(
@@ -258,6 +260,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
                 var effectiveLineBudget = GetEffectiveLineBudgetNoLock(
                     marketDataLineBudget,
                     DateTime.UtcNow);
+                ValidateTickerRange(contracts);
                 var allocation = OptionMarketDataLineAllocator.Allocate(
                     contracts,
                     _subscriptionsByConId.Keys.ToArray(),
@@ -299,7 +302,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
                 UpdateDiagnosticOccupancy();
             }
 
-            await Task.WhenAll(sends).WaitAsync(cancellationToken).ConfigureAwait(false);
+            await IbTaskOwnership.Own(Task.WhenAll(sends)).WaitAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             return new SubscriptionLease(this, consumerId, attached, onUpdate);
         }
@@ -320,6 +323,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         {
             ThrowIfDisposed();
             if (!lease.IsOwned) throw new ObjectDisposedException(nameof(SubscriptionLease));
+            ValidateTickerRange(contracts);
             var wanted = contracts.Select(static c => c.ConId).ToHashSet();
             var afterRelease = _subscriptionsByConId.Values
                 .Where(s => wanted.Contains(s.Contract.ConId)
@@ -345,7 +349,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             }
             UpdateDiagnosticOccupancy();
         }
-        await Task.WhenAll(sends).WaitAsync(token).ConfigureAwait(false);
+        await IbTaskOwnership.Own(Task.WhenAll(sends)).WaitAsync(token).ConfigureAwait(false);
     }
 
     public ValueTask DisposeAsync()
@@ -362,7 +366,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             _subscriptionsByConId.Clear();
             _subscriptionsByRequest.Clear();
             UpdateDiagnosticOccupancy();
-            _disposal = Task.Run(DisposeCoreAsync);
+            _disposal = IbTaskOwnership.Own(Task.Run(DisposeCoreAsync));
             return new ValueTask(_disposal);
         }
     }
@@ -370,19 +374,29 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
     private async Task DisposeCoreAsync()
     {
         _lifetime.Cancel();
-        var closed = new IbOptionGatewayException("CONNECTION_CLOSED", "IB Gateway 已释放");
-        _connected.TrySetException(closed);
-        foreach (var request in _contractRequests.Values) request.Completion.TrySetException(closed);
-        foreach (var request in _securityRequests.Values) request.Completion.TrySetException(closed);
-        TryInvoke(_client, "eDisconnect");
+        // Normal retirement is cancellation, not an unhandled connection failure.
+        _connected.TrySetCanceled(_lifetime.Token);
+        foreach (var request in _contractRequests.Values) request.Completion.TrySetCanceled(_lifetime.Token);
+        foreach (var request in _securityRequests.Values) request.Completion.TrySetCanceled(_lifetime.Token);
+        try { if (_client != null) IbSocketRuntime.Disconnect(_client); }
+        catch { /* Retry after initialization has finished; final failure is fatal. */ }
         TryInvoke(_signal, "issueSignal");
-        await _outbound.DisposeAsync().ConfigureAwait(false);
+        Exception? retirementFailure = null;
+        try { await _outbound.DisposeAsync().ConfigureAwait(false); }
+        catch (Exception error) { retirementFailure = error; }
         if (_initialization != null)
         {
             try { await _initialization.ConfigureAwait(false); }
             catch { /* Failed initialization must not prevent retirement. */ }
         }
-        TryInvoke(_client, "eDisconnect");
+        var disconnected = false;
+        try
+        {
+            if (_client != null) IbSocketRuntime.Disconnect(_client);
+            if (IsConnected) throw new System.IO.IOException("IB socket remains connected after disconnect");
+            disconnected = true;
+        }
+        catch (Exception error) { retirementFailure ??= error; }
         TryInvoke(_signal, "issueSignal");
 
         if (_readerLoop != null)
@@ -396,10 +410,18 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
             {
             }
+            catch (Exception error) { retirementFailure ??= error; }
         }
 
-        _lifetime.Dispose();
-        Interlocked.Exchange(ref _sessionReservation, null)?.Dispose();
+        try { _lifetime.Dispose(); }
+        finally
+        {
+            // Do not advertise a free Client ID if socket retirement failed.
+            // The pool also retains its failed-disposal barrier.
+            if (disconnected) Interlocked.Exchange(ref _sessionReservation, null)?.Dispose();
+        }
+        if (retirementFailure != null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(retirementFailure).Throw();
     }
 
     private void InitializeSocket()
@@ -411,7 +433,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         (_client, _signal) = IbSocketRuntime.Create(_assembly, HandleCallback);
         IbSocketRuntime.Connect(_client, _options.Host, _options.Port, _options.ClientId);
         _reader = IbSocketRuntime.StartReader(_assembly, _client, _signal);
-        _readerLoop = Task.Run(ReadMessages, _lifetime.Token);
+        _readerLoop = IbTaskOwnership.Own(Task.Run(ReadMessages, _lifetime.Token));
     }
 
     private void ReadMessages()
@@ -428,8 +450,9 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
                 InvokeRequired(_reader!, "processMsgs");
             }
         }
-        catch when (!_lifetime.IsCancellationRequested)
+        catch
         {
+            if (_lifetime.IsCancellationRequested) return;
             Interlocked.Exchange(ref _connectionFaulted, 1);
             _connected.TrySetException(new IbOptionGatewayException(
                 "CONNECTION_CLOSED", "IB Gateway reader 已停止"));
@@ -785,6 +808,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
 
         if (!TryParseRealtimeVolume(subscription.Contract, text, out var sample))
         {
+            Interlocked.Increment(ref _invalidRealtimeSamples);
             RecordHistoryEnd(subscription, "INVALID_SAMPLE");
             return;
         }
@@ -818,7 +842,8 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         {
             Interlocked.Exchange(ref _connectionFaulted, 1);
             _connected.TrySetException(new IbOptionGatewayException("CLIENT_ID_IN_USE",
-                "IB 326: Client ID 已占用，请配置不同 ID；不会自动接管其他客户端"));
+                "IB 326: Client ID 已占用，请配置不同 ID；不会自动接管其他客户端")
+                { Origin = "IB", RawErrorCode = 326 });
             return;
         }
 
@@ -840,7 +865,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         };
         var exception = new IbOptionGatewayException(
             category,
-            $"IB {callback.ErrorCode}: {callback.Message}");
+            $"IB {callback.ErrorCode}: {callback.Message}") { Origin = "IB", RawErrorCode = callback.ErrorCode };
 
         if (_contractRequests.TryRemove(callback.RequestId, out var contract))
             contract.Completion.TrySetException(exception);
@@ -855,13 +880,16 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             {
                 if (subscription.RequestId != callback.RequestId) return;
                 subscription.RequestId = 0;
+                subscription.FailureCode = callback.ErrorCode;
+                subscription.RetryAfterUtc = DateTime.UtcNow.AddSeconds(
+                    subscription.RecoveryAttempts switch { 0 => 5, 1 => 15, _ => 60 });
                 UpdateDiagnosticOccupancy();
 
                 if (callback.ErrorCode == 101)
                     ObserveLineLimitNoLock(DateTime.UtcNow);
             }
 
-            PublishSubscriptionError(subscription, category, exception.Message);
+            PublishSubscriptionError(subscription, category, exception.Message, callback.ErrorCode);
         }
         else if (callback.RequestId < 0 && callback.ErrorCode is 100 or 101)
         {
@@ -872,7 +900,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             }
 
             foreach (var active in _subscriptionsByRequest.Values.Distinct())
-                PublishSubscriptionError(active, category, exception.Message);
+                PublishSubscriptionError(active, category, exception.Message, callback.ErrorCode);
         }
     }
 
@@ -905,7 +933,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
     private static void PublishSubscriptionError(
         SharedSubscription subscription,
         string category,
-        string message)
+        string message, int rawErrorCode)
         => Publish(subscription, new IbOptionMarketDataUpdate(
             subscription.Contract,
             DateTime.UtcNow,
@@ -914,7 +942,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             null,
             subscription.IsDelayed,
             category,
-            message));
+            message) { ErrorOrigin = "IB", RawErrorCode = rawErrorCode });
 
     private void ReleaseConsumer(long consumerId, IReadOnlyList<long> conIds)
     {
@@ -959,7 +987,9 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         }, _lifetime.Token));
     }
 
-    private async void ObserveSend(Task send)
+    private void ObserveSend(Task send) => IbTaskOwnership.Own(ObserveSendAsync(send));
+
+    private async Task ObserveSendAsync(Task send)
     {
         try { await send.ConfigureAwait(false); }
         catch (OperationCanceledException) { }
@@ -968,7 +998,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
             // Queue saturation or a failed cancel must not leak server-side lines.
             // Retire this connection; consumers reconnect through the normal backoff.
             Interlocked.Exchange(ref _connectionFaulted, 1);
-            _ = DisposeAsync();
+            await DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -1217,7 +1247,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         public List<object> Items { get; } = new();
 
         public TaskCompletionSource<IReadOnlyList<object>> Completion { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+            IbTaskOwnership.Completion<IReadOnlyList<object>>();
     }
 
     private sealed class SecurityDefinitionRequest(
@@ -1231,7 +1261,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         public List<ChainDefinition> Candidates { get; } = new();
 
         public TaskCompletionSource<ChainDefinition> Completion { get; } =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+            IbTaskOwnership.Completion<ChainDefinition>();
     }
 
     private sealed record ChainDefinition(
@@ -1248,6 +1278,8 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
 
     private sealed class SharedSubscription(OptionContractDescriptor contract)
     {
+        public int FailureCode, RecoveryAttempts;
+        public DateTime RetryAfterUtc;
         public ReflectionIbOptionGatewayClient? HistoryOwner;
         public IbHistoryObservation? History;
         public OptionContractDescriptor Contract { get; } = contract;

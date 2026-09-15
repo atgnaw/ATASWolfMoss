@@ -17,7 +17,39 @@
 项目可同时生成两个版本：
 
 - 普通版 `FuturesReferencePriceAxis` v1.1.0：保持原有映射功能和指标类型不变。
-- Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.2.0：在映射轴右侧依次增加同宽的 Nightwatch Dealer Heatmap、Dealer GEX、IBKR Option OI 和 Option Premium/Volume。
+- Pro 版 `FuturesReferencePriceAxis.DealerHeatmap` v2.3.0：在映射轴右侧依次增加同宽的 Nightwatch Dealer Heatmap、Dealer GEX、IBKR Option OI 和 Option Premium/Volume。
+
+## Pro 状态 UI 与 Flow 倒计时
+
+`Status UI / 状态信息` 设置组提供六类文字的独立开关：映射轴、Heatmap、Dealer GEX、
+Option OI、Option Flow、性能监控，默认全部开启。它们只控制文字，不启停功能或诊断记录。
+状态面板宽度默认 480 像素，可设为 180–1600，受图表剩余宽度限制；长文本自动换行。
+
+Flow 开启后，在状态面板下方独立显示每秒更新的倒计时。固定模式显示当前形成桶剩余时间，
+滚动模式显示统一 ATM 下次换档剩余时间（`ATM` 标签，不代表滚动窗口结束）。
+关闭状态总开关或全部分类后，倒计时仍在状态面板原定位处显示；关闭 Flow 后消失。
+详情及人工验收项目见 [状态 UI 更新说明](docs/stability/status-ui-controls.md)。
+
+最新补丁在共享 Flow 组中暂存不超过 1 秒的超前样本，待 UTC 追上再按原始源时间处理，
+超过上限仍拒绝；新增暂存/补入/丢弃诊断，见 [小幅超前修复说明](docs/stability/future-buffer-fix.md)。
+此前增加的 [毫秒级拒绝诊断](docs/stability/future-rejection-evidence.md) 仍保留。
+当前版本 130 组离线测试通过，Release 零警告、零错误；尚未进行本次 ATAS 界面验收。
+
+## 稳定性修改（新计划分批执行）
+
+最新补丁修复切换品种后的 IB Client ID 占用：官方可选参数断开调用改为显式 bool，
+最终释放失败不再静默忽略。[修复说明及 DLL 校验值](docs/stability/instrument-switch-disconnect-fix.md)。
+
+本轮五批稳定性修改已完成，普通版仍为 1.1.0，Pro 为 2.3.0：
+
+- [第一批](docs/stability/batch-1-report.md)：异常所有权、统一实时 UTC、校时保护及输入／错误来源诊断。
+- [第二批](docs/stability/batch-2-report.md)：同连接同品种统一 ATM、最短周期换档、主图接替及接收范围围栏。
+- [第三批](docs/stability/batch-3-report.md)：按设置共享 Flow 样本／基线／快照，固定与滚动模式分段覆盖。
+- [第四批](docs/stability/batch-4-report.md)：OI 开关不重启 Flow、全零提示、按合约故障状态与有界恢复。
+- [第五批](docs/stability/batch-5-report.md)：精确区分共享去重与拒绝、共享统计热点优化、离线基准与最终验收。
+
+上述五批结束时 Release 构建零警告、零错误，121 组离线回归全部通过。第四、第五批按授权连续完成，该阶段 DLL 标识与验证记录见第五批报告。
+未自动部署 ATAS，也未连接真实 IB Gateway。
 
 ## 性能诊断与阶段性优化
 
@@ -70,7 +102,7 @@ dotnet build .\FuturesReferencePriceAxis.sln -c Release `
   -p:ATASInstallDir="D:\Apps\ATAS Platform"
 ```
 
-Release 构建 Pro 2.2.0 前，需要安装官方 TWS API 10.45 C# 源码。默认目录：
+Release 构建 Pro 前，需要安装官方 TWS API 10.45 C# 源码。默认目录：
 
 ```text
 C:\TWS API\source\CSharpClient\client
@@ -224,8 +256,14 @@ Call/Put 的最大值共享归一化；无事件显示 `·`，缺失数据或缺
 且不带美元符号；悬停可查看完整 OI、Premium、Volume、桶区间、统计口径、ATM
 相对档位和 RTH/GTH 状态。
 
-Rolling 始终计算最近 N 分钟；ATM 与当前接收的执行价范围锁定 N 分钟，
-到期后按最新映射价格重新选择（即使 ATM 未变也重新锁定 N 分钟）。
+同一连接、同一标的采用统一接收 ATM：按当前启用 Flow 配置中的最短周期换档，
+并对齐实际交易区段起点。3m 与 5m 共存时按 3m 换档；1m 与 5m 共存时按 1m 换档。
+主图使用最先成为有效来源的图表；主图移除或超过 30 秒无当前柱回调时可接替。
+固定／滚动统计仍保留各自 1/3/5/10 分钟周期，不会被接收范围的换档节奏改短。
+相同连接、标的、到期日、桶模式、周期、成交口径和档数共用 Flow 统计；
+OI 显示开关、列宽、显示时区不分裂统计组。新配置组不回补创建前的数据。
+
+Rolling 始终计算最近 N 分钟，接收范围服从上述统一换档节奏。
 换档后重叠合约保留累计样本；移出范围的合约不再接收新数据，但已有成交
 会继续显示，直到自然滚出窗口。过渡期间 Flow 可显示超过设置档数的价位，
 这些保留行不增加行情线，柱色变淡，悬停标记 `RETAINED`。

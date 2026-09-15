@@ -22,6 +22,8 @@ public sealed class OptionRollingFlowState
     }
 
     private readonly Dictionary<long, ContractSeries> _series = new();
+    // Scratch only; published rows copy values and never reference this dictionary.
+    private readonly Dictionary<long, (OptionIntervalValue? Value, OptionFlowCoverage Coverage)> _results = new();
     private IReadOnlyList<OptionTradingSegment> _segments = Array.Empty<OptionTradingSegment>();
     private OptionTradingSegment? _segment;
     private DateTime _lockedUntilUtc = DateTime.MinValue;
@@ -148,35 +150,44 @@ public sealed class OptionRollingFlowState
             CloseRun(entry, nowUtc);
     }
 
+    public void RetireContract(long conId, DateTime nowUtc)
+    {
+        if (!_series.TryGetValue(conId, out var entry)) return;
+        CloseRun(entry, nowUtc);
+        entry.Active = false;
+    }
+
     public bool Add(OptionCumulativeSample sample, OptionFlowTradeScope scope, DateTime receivedUtc)
+        => AddDetailed(sample, scope, receivedUtc) == FlowSampleDisposition.Accepted;
+
+    public FlowSampleDisposition AddDetailed(OptionCumulativeSample sample, OptionFlowTradeScope scope, DateTime receivedUtc)
     {
         if (!sample.HasValidCumulativeValue())
-            return false;
+            return FlowSampleDisposition.Invalid;
+        if (sample.SampleUtc > receivedUtc) return FlowSampleDisposition.FutureSource;
         AdvanceClock(receivedUtc);
-        if (!_segment.HasValue || !_segment.Value.Contains(sample.SampleUtc)
-            || !_series.TryGetValue(sample.ConId, out var entry) || !entry.Active
-            || entry.Runs.Count == 0 || sample.SampleUtc > receivedUtc)
-            return false;
+        if (!_segment.HasValue || !_segment.Value.Contains(sample.SampleUtc)) return FlowSampleDisposition.OutsideSession;
+        if (!_series.TryGetValue(sample.ConId, out var entry) || !entry.Active) return FlowSampleDisposition.OutsideLadder;
+        if (entry.Runs.Count == 0) return FlowSampleDisposition.ObservationGap;
 
         var run = entry.Runs[^1];
-        if (sample.SampleUtc < run.StartUtc
-            || (run.EndUtc.HasValue && sample.SampleUtc >= run.EndUtc.Value))
-            return false;
+        if (sample.SampleUtc < run.StartUtc) return FlowSampleDisposition.BeforeCoverage;
+        if (run.EndUtc.HasValue && sample.SampleUtc >= run.EndUtc.Value) return FlowSampleDisposition.ObservationGap;
 
         var samples = run.Samples(scope);
         if (samples.Count > 0)
         {
             var previous = samples[^1];
             // Late or duplicated callbacks must not erase a valid baseline.
-            if (sample.SampleUtc <= previous.SampleUtc)
-                return false;
+            if (sample.SampleUtc == previous.SampleUtc) return FlowSampleDisposition.Duplicate;
+            if (sample.SampleUtc < previous.SampleUtc) return FlowSampleDisposition.OutOfOrder;
             if (sample.TotalVolume < previous.TotalVolume
                 || sample.Multiplier != previous.Multiplier
                 || sample.CumulativePremium < previous.CumulativePremium)
                 samples.Clear();
         }
         samples.Add(sample);
-        return true;
+        return FlowSampleDisposition.Accepted;
     }
 
     public OptionFlowSnapshot CreateSnapshot(
@@ -195,7 +206,8 @@ public sealed class OptionRollingFlowState
         var startUtc = endUtc.HasValue
             ? Max(endUtc.Value.AddMinutes(-minutes), _segment!.Value.StartUtc)
             : (DateTime?)null;
-        var results = new Dictionary<long, (OptionIntervalValue? Value, OptionFlowCoverage Coverage)>();
+        var results = _results;
+        results.Clear();
 
         if (startUtc.HasValue && endUtc.HasValue)
         {
@@ -218,7 +230,7 @@ public sealed class OptionRollingFlowState
             || (results.TryGetValue(entry.Contract.ConId, out var result) && result.Value.HasValue))
             .GroupBy(static entry => entry.Contract.StrikeUsd)
             .OrderBy(static group => group.Key);
-        var rows = new List<OptionStrikeRow>();
+        var rows = new List<OptionStrikeRow>((_series.Count + 1) / 2);
         foreach (var group in visible)
         {
             var call = group.FirstOrDefault(static entry => entry.Contract.Right == OptionRight.Call);
@@ -264,6 +276,7 @@ public sealed class OptionRollingFlowState
     public void Clear()
     {
         _series.Clear();
+        _results.Clear();
         _segments = Array.Empty<OptionTradingSegment>();
         _segment = null;
         _lockedUntilUtc = DateTime.MinValue;

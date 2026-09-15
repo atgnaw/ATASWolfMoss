@@ -71,6 +71,20 @@ public sealed record PerformanceSnapshot(DateTime Utc, DurationSummary Render,
     long CachedSamples, long OiValues, long GatewayReplacements, int BackgroundTasks,
     long DiagnosticSamplesDropped, string RecorderState, string LastErrorCode = "NONE")
 {
+    public DateTime? AtasUtc { get; init; }
+    public string? FlowTicker { get; init; }
+    public DateOnly? FlowExpiration { get; init; }
+    public DateTime? CoverageStartUtc { get; init; }
+    public DateTime? BucketStartUtc { get; init; }
+    public DateTime? BucketEndUtc { get; init; }
+    public long ClockJumps { get; init; }
+    public double ClockAdjustmentSeconds { get; init; }
+    public FlowReceptionSnapshot? Reception { get; init; }
+    public FlowFutureBufferSnapshot? FutureBuffer { get; init; }
+    public string LastErrorOrigin { get; init; } = "UNKNOWN";
+    public int? LastRawErrorCode { get; init; }
+    public DateTime? LastErrorUtc { get; init; }
+    public long InvalidIbSamples { get; init; }
     // Batch 1 has synchronous IB callbacks, not an independently observable application queue.
     public int? EventQueueLength => null;
     public long? MarketDataGaps => null;
@@ -91,16 +105,20 @@ public sealed class PerformanceCollector
     private long _gatewayId;
     private long _replacements;
     private DateTime? _previousUtc;
-    private string _lastError = "NONE";
-    public void RecordError(string code)
+    private sealed record ErrorObservation(string Code, string Origin, int? RawCode, DateTime? Utc);
+    private ErrorObservation _lastError = new("NONE", "UNKNOWN", null, null);
+    public void RecordError(string code, string origin = "UNKNOWN", int? rawCode = null)
     {
         if (!Enabled) return;
-        Volatile.Write(ref _lastError, code switch
+        var safeCode = code switch
         {
             "LINE_LIMIT" or "NO_PERMISSION" or "NO_CONTRACTS" or "PACING" or "CONNECT_TIMEOUT"
-                or "CONNECTION_CLOSED" or "INTERNAL" => code,
+                or "CONNECTION_CLOSED" or "INTERNAL" or "CLOCK_ADJUSTED" or "CLIENT_ID_IN_USE" => code,
             _ => "OTHER"
-        });
+        };
+        var safeOrigin = origin is "LOCAL_BUDGET" or "IB" or "TRANSPORT" or "LOCAL" or "CLOCK" ? origin : "UNKNOWN";
+        Volatile.Write(ref _lastError, new ErrorObservation(safeCode, safeOrigin,
+            rawCode is >= 0 and <= 999999 ? rawCode : null, DateTime.UtcNow));
     }
     public bool Enabled { get => Volatile.Read(ref _enabled) != 0; set => Volatile.Write(ref _enabled, value ? 1 : 0); }
     public void EventReceived() { if (Enabled) Interlocked.Increment(ref _events); }
@@ -147,10 +165,13 @@ public sealed class PerformanceCollector
         var eventRate = _previousUtc.HasValue ? Math.Max(0, events - _previousEvents) / seconds : 0;
         _previousEvents = events;
         _previousUtc = utc;
+        var error = Volatile.Read(ref _lastError);
         return new(utc, _durations[0].Read(utc), _durations[1].Read(utc), _durations[2].Read(utc),
             eventRate, sendRate, cancelRate, gateway?.ActiveLines ?? 0, budget, gateway?.Consumers ?? 0,
             Interlocked.Read(ref _cachedSamples), Interlocked.Read(ref _oiValues), _replacements,
             Volatile.Read(ref _backgroundTasks) + (gateway?.ReaderTasks ?? 0), dropped, recorderState,
-            Volatile.Read(ref _lastError));
+            error.Code)
+        { LastErrorOrigin = error.Origin, LastRawErrorCode = error.RawCode, LastErrorUtc = error.Utc,
+            InvalidIbSamples = gateway?.InvalidRealtimeSamples ?? 0 };
     }
 }

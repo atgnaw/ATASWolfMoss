@@ -99,6 +99,9 @@ internal static class PerformanceBaseline
             var bucketMode = Enum.ToObject(Core("OptionFlowBucketMode"), (int)mode);
             var scope = Enum.ToObject(Core("OptionFlowTradeScope"), 0);
             Set("_optionDataSync", new object());
+            Set("_realtimeClock", TimeProvider.System);
+            Set("_flowClockGuard", Activator.CreateInstance(Core("RealtimeClockGuard"))!);
+            Set("_flowReception", Activator.CreateInstance(Core("FlowReceptionDiagnostics"))!);
             Set("_optionFlowBucketMode", bucketMode); Set("_optionFlowTradeScope", scope);
             Set("_optionFlowIntervalMinutes", minutes); Set("_optionStrikeLevels", 21);
             Set("_optionFlowSnapshot", Core("OptionFlowSnapshot").GetMethod("Disabled")!.Invoke(null, new object[] { Now, bucketMode, scope, minutes })!);

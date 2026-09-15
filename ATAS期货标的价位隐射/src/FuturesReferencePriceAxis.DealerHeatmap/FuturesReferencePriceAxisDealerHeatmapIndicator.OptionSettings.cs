@@ -32,7 +32,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 return;
 
             _showOptionOpenInterest = value;
-            ReconfigureOptionData();
+            ReconfigureOpenInterestVisibility();
         }
     }
 
@@ -50,6 +50,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
             _showOptionPremiumFlow = value;
             ReconfigureOptionData(resetFlowAggregation: true);
+            RestartFlowCountdownClock();
         }
     }
 
@@ -214,6 +215,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         bool resetFlowAggregation = false)
     {
         Interlocked.Increment(ref _optionDataGeneration);
+        Volatile.Write(ref _flowCountdownContext, null);
 
         if (!IsIndicatorInitialized)
             return;

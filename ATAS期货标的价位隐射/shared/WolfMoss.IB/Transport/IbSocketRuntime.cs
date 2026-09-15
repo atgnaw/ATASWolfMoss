@@ -31,6 +31,15 @@ internal static class IbSocketRuntime
         return reader;
     }
 
+    public static void Disconnect(object client)
+    {
+        // Optional C# parameters still exist in reflection. API 10.45 requires
+        // an explicit bool; a zero-argument lookup cannot find this method.
+        var method = client.GetType().GetMethod("eDisconnect", [typeof(bool)])
+            ?? throw new MissingMethodException(client.GetType().FullName, "eDisconnect(bool)");
+        method.Invoke(client, [true]);
+    }
+
     public static void Invoke(object target, string method, params object?[] args)
     {
         var candidate = target.GetType().GetMethods().FirstOrDefault(value => value.Name == method

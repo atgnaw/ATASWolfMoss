@@ -1,4 +1,7 @@
 namespace WolfMoss.ATAS.PriceMapping.Core;
 
 public sealed record IbPerformanceSnapshot(long InstanceId, long SendAttempts, long CancelAttempts,
-    int ActiveLines, int Consumers, int ReaderTasks);
+    int ActiveLines, int Consumers, int ReaderTasks)
+{
+    public long InvalidRealtimeSamples { get; init; }
+}

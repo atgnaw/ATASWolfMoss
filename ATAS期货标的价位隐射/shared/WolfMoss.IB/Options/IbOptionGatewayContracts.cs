@@ -40,7 +40,11 @@ internal readonly record struct IbOptionMarketDataUpdate(
     OptionCumulativeSample? AllTimeAndSales,
     bool IsDelayed,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null)
+{
+    public string ErrorOrigin { get; init; } = "UNKNOWN";
+    public int? RawErrorCode { get; init; }
+}
 
 internal interface IIbOptionSubscriptionLease : IDisposable
 {
@@ -98,7 +102,11 @@ internal sealed class IbOptionGatewayException : Exception
         : base(message, inner)
     {
         Code = code;
+        Origin = code == "LINE_LIMIT" ? "LOCAL_BUDGET"
+            : code is "CONNECT_TIMEOUT" or "CONNECTION_CLOSED" ? "TRANSPORT" : "LOCAL";
     }
 
     public string Code { get; }
+    public string Origin { get; init; }
+    public int? RawErrorCode { get; init; }
 }

@@ -17,6 +17,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     {
         foreach (var source in RegisteredLifecycles) source.Initialize(this);
         RestartPerformanceDiagnostics();
+        RestartFlowCountdownClock();
     }
 
     protected override void OnEditionFinishRecalculate()
@@ -43,6 +44,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     protected override void OnEditionDisposing()
     {
         StopPerformanceDiagnostics();
+        StopFlowCountdownClock();
         foreach (var source in RegisteredLifecycles) source.Stop(this);
     }
 
@@ -58,7 +60,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             _dealerHeatmapScheduleCancellation?.Cancel();
             _dealerHeatmapScheduleCancellation?.Dispose();
             _dealerHeatmapScheduleCancellation = null;
-            var nowUtc = CurrentUtcTime();
+            var nowUtc = RealtimeUtcNow();
 
             if (!_showDealerHeatmap)
                 SetDealerHeatmapSnapshot(DealerHeatmapSnapshot.Disabled(nowUtc));
@@ -87,7 +89,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
 
         var generation = Interlocked.Read(ref _dealerHeatmapGeneration);
-        _ = RunDealerDataLoopAsync(generation, cancellationToken);
+        IbTaskOwnership.Own(RunDealerDataLoopAsync(generation, cancellationToken));
     }
 
     private void StopDealerHeatmapSchedule()
@@ -117,7 +119,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 if (!IsCurrentDealerHeatmapGeneration(generation, cancellationToken))
                     return;
 
-                var nowUtc = CurrentUtcTime();
+                var nowUtc = RealtimeUtcNow();
                 var nextUtc = DealerHeatmapSchedule.CalculateNextAttemptUtc(
                     nowUtc,
                     _dealerHeatmapRthRefreshMinutes,
@@ -136,7 +138,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                     SetDealerGexSnapshot(dealerGex with { NextAttemptUtc = nextUtc });
                 }
 
-                var delay = nextUtc - CurrentUtcTime();
+                var delay = nextUtc - RealtimeUtcNow();
 
                 if (delay < TimeSpan.FromSeconds(1))
                     delay = TimeSpan.FromSeconds(1);
@@ -149,7 +151,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         }
         catch
         {
-            var nowUtc = CurrentUtcTime();
+            var nowUtc = RealtimeUtcNow();
 
             if (_showDealerHeatmap)
             {
@@ -181,7 +183,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         long generation,
         CancellationToken cancellationToken)
     {
-        var nowUtc = CurrentUtcTime();
+        var nowUtc = RealtimeUtcNow();
 
         if (!InstrumentPairResolver.TryResolve(
                 ConfiguredPairMode,
@@ -234,7 +236,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         long generation,
         CancellationToken cancellationToken)
     {
-        var nowUtc = CurrentUtcTime();
+        var nowUtc = RealtimeUtcNow();
         var target = NyseTradingCalendar.ResolveTarget(nowUtc, pair.ReferenceSymbol);
         var previous = Volatile.Read(ref _dealerHeatmapSnapshot);
         var reusableFrame = IsFrameForTarget(previous.Frame, target)
@@ -272,7 +274,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 target,
                 frame,
                 state,
-                CurrentUtcTime(),
+                RealtimeUtcNow(),
                 null,
                 message,
                 false));
@@ -298,7 +300,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 target,
                 reusableFrame,
                 state,
-                CurrentUtcTime(),
+                RealtimeUtcNow(),
                 exception.RetryAfterUtc,
                 exception.Message,
                 reusableFrame != null));
@@ -312,7 +314,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 reusableFrame != null
                     ? DealerHeatmapState.Frozen
                     : DealerHeatmapState.Waiting,
-                CurrentUtcTime(),
+                RealtimeUtcNow(),
                 null,
                 "Dealer Heatmap 内部错误",
                 reusableFrame != null));
@@ -325,7 +327,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         long generation,
         CancellationToken cancellationToken)
     {
-        var nowUtc = CurrentUtcTime();
+        var nowUtc = RealtimeUtcNow();
         var ticker = pair.ReferenceSymbol.ToUpperInvariant();
         var previous = Volatile.Read(ref _dealerGexSnapshot);
         var reusableFrame = IsDealerGexFrameForTicker(previous.Frame, ticker)
@@ -352,7 +354,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             if (!IsCurrentDealerHeatmapGeneration(generation, cancellationToken))
                 return null;
 
-            var state = DealerGexSessionPolicy.ResolveState(CurrentUtcTime(), frame);
+            var state = DealerGexSessionPolicy.ResolveState(RealtimeUtcNow(), frame);
             var message = previous.Frame?.SnapshotAtUtc == frame.SnapshotAtUtc
                 ? $"数据未推进，沿用 {frame.Nodes.Count} 个关键价位"
                 : $"已更新 {frame.Nodes.Count} 个关键价位";
@@ -364,7 +366,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 ticker,
                 frame,
                 state,
-                CurrentUtcTime(),
+                RealtimeUtcNow(),
                 null,
                 message,
                 state == DealerGexState.Frozen));
@@ -390,7 +392,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 ticker,
                 reusableFrame,
                 state,
-                CurrentUtcTime(),
+                RealtimeUtcNow(),
                 exception.RetryAfterUtc,
                 exception.Message,
                 reusableFrame != null));
@@ -404,7 +406,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 reusableFrame != null
                     ? DealerGexState.Frozen
                     : DealerGexState.Waiting,
-                CurrentUtcTime(),
+                RealtimeUtcNow(),
                 null,
                 "Dealer GEX 内部错误",
                 reusableFrame != null));

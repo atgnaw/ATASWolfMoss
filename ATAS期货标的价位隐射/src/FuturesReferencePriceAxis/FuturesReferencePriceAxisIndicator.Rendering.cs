@@ -256,7 +256,7 @@ public abstract partial class FuturesReferencePriceAxisIndicatorBase
             CenteredStringFormat);
     }
 
-    private void DrawStatusPanel(
+    protected virtual void DrawStatusPanel(
         RenderContext context,
         InstrumentPair pair,
         UpdateAttemptSnapshot attempt,
@@ -329,7 +329,7 @@ public abstract partial class FuturesReferencePriceAxisIndicatorBase
             LeftCenteredStringFormat);
     }
 
-    private string[] GetStatusLines(
+    protected string[] GetStatusLines(
         InstrumentPair pair,
         UpdateAttemptSnapshot attempt,
         MappingSnapshot? mapping,
