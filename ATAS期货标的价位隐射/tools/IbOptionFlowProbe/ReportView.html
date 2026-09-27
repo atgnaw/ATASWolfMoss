@@ -1,0 +1,34 @@
+<section class="workspace" aria-label="成交方向分析">
+  <div class="section-heading"><div><span class="eyebrow">先看方向，再看不确定性</span><h2>逐桶观察</h2></div><button id="robust-preset" class="secondary">恢复保守预设</button></div>
+  <div class="filter-panel">
+    <label>品种<select id="robust-ticker"></select></label>
+    <label>执行价<select id="robust-strike"></select></label>
+    <label>期权类型<select id="robust-right"></select></label>
+    <label>成交口径 <button class="help" type="button" data-help="scope" aria-label="解释成交口径">?</button><select id="robust-scope"><option value="RegularTrades" selected>常规成交</option><option value="AllTimeAndSales">全部成交回报</option></select></label>
+    <label>统计周期<select id="robust-interval"><option value="1" selected>1 分钟</option><option value="3">3 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option><option value="0">整段汇总</option></select></label>
+    <label>时间桶<select id="robust-bucket"></select></label>
+    <label>分类方法 <button class="help" type="button" data-help="method" aria-label="解释分类方法">?</button><select id="robust-method"><option value="AtQuote">仅贴买卖价</option><option value="Midpoint" selected>中间价法</option><option value="MidpointTick">中间价＋逐笔涨跌</option></select></label>
+    <label>时间对齐 <button class="help" type="button" data-help="alignment" aria-label="解释时间对齐">?</button><select id="robust-alignment"><option value="Consensus" selected>多时间候选一致</option><option value="Latest">接收时最新报价</option><option value="Source">源时间附近的报价</option></select></label>
+    <label id="robust-parameter-label">对齐参数<select id="robust-scenario"></select></label>
+    <label>显示时区<select id="robust-zone"><option value="America/New_York" selected>纽约交易时间</option><option value="Asia/Singapore">北京时间 / 新加坡</option><option value="UTC">世界标准时间</option></select></label>
+  </div>
+  <label class="outside-toggle"><input type="checkbox" id="robust-outside"> 报价外成交按方向归类（U15）：高于 Ask → 买；低于 Bid → 卖 <button type="button" class="help" data-help="outside">?</button></label>
+  <p id="robust-mode-note" class="mode-note"></p>
+  <div id="robust-summary" class="summary-grid" aria-live="polite"></div>
+  <div class="table-toolbar"><div><strong id="robust-count"></strong><span class="key"><i class="dot buy"></i>偏买 <i class="dot sell"></i>偏卖 <i class="dot mid"></i>Mid 中性 <i class="dot unknown"></i>未知</span></div><div class="pagination"><button id="robust-prev" aria-label="上一页">←</button><span id="robust-page"></span><button id="robust-next" aria-label="下一页">→</button></div></div>
+  <div class="table-scroll"><table class="analysis-table"><thead><tr>
+    <th>时间 / 合约</th>
+    <th>权利金构成 <button class="help" data-help="premium" aria-label="解释权利金构成">?</button></th>
+    <th>倾向 <button class="help" data-help="tendency" aria-label="解释倾向">?</button></th>
+    <th>分类覆盖 <button class="help" data-help="coverage" aria-label="解释分类覆盖">?</button></th>
+    <th>未知边界 <button class="help" data-help="bounds" aria-label="解释未知边界">?</button></th>
+    <th>时间敏感性 <button class="help" data-help="timing" aria-label="解释时间敏感性">?</button></th>
+    <th>未知原因 <button class="help" data-help="unknown" aria-label="解释未知原因">?</button></th>
+    <th>抗误判余量 <button class="help" data-help="tolerance" aria-label="解释抗误判余量">?</button></th>
+    <th class="detail-heading"><span class="sr-only">详情</span></th>
+  </tr></thead><tbody id="robust-rows"></tbody></table></div>
+  <div id="robust-empty" class="empty" hidden>这个筛选组合没有记录。请更换执行价、时间桶或成交口径。</div>
+  <p class="footnote">正值偏买，负值偏卖；不是看涨 / 看跌，也不是准确率。灰色“参考”标签表示样本或质量不足，数字仅供观察。Mid 是本报告的中性分类，不等于真实成交中性；不计入买卖方向。色条按权利金加权，不按笔数。金额单位：美元。</p>
+  <details class="legend-section"><summary>未知原因图例 <span>固定编号 · 点击查看解释与例子</span></summary><div id="robust-legend" class="legend-grid"></div></details>
+</section>
+<dialog id="robust-dialog" aria-labelledby="robust-dialog-title"><div class="dialog-heading"><h2 id="robust-dialog-title"></h2><button id="robust-close" class="icon-button" aria-label="关闭说明">×</button></div><div id="robust-detail"></div></dialog>

@@ -12,12 +12,24 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IbModule.ConsumerA", "tests
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IbModule.ConsumerB", "tests\IbModule.ConsumerB\IbModule.ConsumerB.csproj", "{5CE2AC60-1249-44D5-A1BE-68258B16B652}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IbOptionFlowProbe", "tools\IbOptionFlowProbe\IbOptionFlowProbe.csproj", "{A1AB2548-0A57-4C38-9B37-092A51E68711}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IbOptionFlowProbe.Tests", "tests\IbOptionFlowProbe.Tests\IbOptionFlowProbe.Tests.csproj", "{A1AB2548-0A57-4C38-9B37-092A51E68712}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1AB2548-0A57-4C38-9B37-092A51E68711}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1AB2548-0A57-4C38-9B37-092A51E68711}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1AB2548-0A57-4C38-9B37-092A51E68711}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1AB2548-0A57-4C38-9B37-092A51E68711}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1AB2548-0A57-4C38-9B37-092A51E68712}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1AB2548-0A57-4C38-9B37-092A51E68712}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1AB2548-0A57-4C38-9B37-092A51E68712}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1AB2548-0A57-4C38-9B37-092A51E68712}.Release|Any CPU.Build.0 = Release|Any CPU
 		{5CE2AC60-1249-44D5-A1BE-68258B16B651}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{5CE2AC60-1249-44D5-A1BE-68258B16B651}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5CE2AC60-1249-44D5-A1BE-68258B16B651}.Release|Any CPU.ActiveCfg = Release|Any CPU

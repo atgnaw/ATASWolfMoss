@@ -461,6 +461,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
 
     private void HandleCallback(MethodInfo method, object?[] args)
     {
+        ObserveRawCallback(method.Name, args);
         try
         {
             switch (method.Name)

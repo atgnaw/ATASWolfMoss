@@ -3,3 +3,6 @@
 
 # User-licensed build-time dependencies are never committed.
 .external/ibapi/
+
+# Local package cache for standalone developer tools.
+.pnpm-store/

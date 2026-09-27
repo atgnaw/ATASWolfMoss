@@ -1,6 +1,6 @@
 namespace WolfMoss.ATAS.PriceMapping.Core;
 
-public static class NyseTradingCalendar
+public static partial class NyseTradingCalendar
 {
     public static readonly TimeSpan RegularOpen = new(9, 30, 0);
     public static readonly TimeSpan RegularClose = new(16, 0, 0);
@@ -36,33 +36,6 @@ public static class NyseTradingCalendar
         return IsTradingDay(eastern.Date)
                && eastern.TimeOfDay >= RegularOpen
                && eastern.TimeOfDay <= GetRegularClose(eastern.Date);
-    }
-
-    public static DealerHeatmapTarget ResolveTarget(DateTime utcTime, string ticker)
-    {
-        var eastern = UsMarketClock.ToEastern(utcTime);
-        var date = eastern.Date;
-
-        if (IsTradingDay(date))
-        {
-            var close = GetRegularClose(date);
-
-            if (eastern.TimeOfDay <= close + FinalPublicationGrace)
-            {
-                var state = eastern.TimeOfDay >= RegularOpen
-                    ? DealerHeatmapSessionState.RegularTradingHours
-                    : DealerHeatmapSessionState.NextSession;
-                return new DealerHeatmapTarget(
-                    ticker.ToUpperInvariant(),
-                    DateOnly.FromDateTime(date),
-                    state);
-            }
-        }
-
-        return new DealerHeatmapTarget(
-            ticker.ToUpperInvariant(),
-            DateOnly.FromDateTime(GetNextTradingDay(date)),
-            DealerHeatmapSessionState.NextSession);
     }
 
     public static DateTime GetNextTradingDay(DateTime date)

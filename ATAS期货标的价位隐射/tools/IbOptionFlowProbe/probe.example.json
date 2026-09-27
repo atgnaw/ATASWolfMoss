@@ -1,0 +1,11 @@
+{
+  "host": "127.0.0.1",
+  "port": 4001,
+  "client_id": 2290,
+  "duration_minutes": 30,
+  "strikes_each_side": 1,
+  "reference_spots": {
+    "QQQ": 0,
+    "SPX": 0
+  }
+}

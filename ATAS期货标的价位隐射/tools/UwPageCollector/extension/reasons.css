@@ -1,0 +1,5 @@
+#reasons { margin-top:24px; padding-top:4px; border-top:1px solid #e3ebee }
+#reasons:empty { display:none }
+.reason-list { list-style:none; padding:0; margin:12px 0; display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px }
+.reason-list li { display:flex; justify-content:space-between; gap:16px; padding:12px 15px; background:#f8fafb; border:1px solid #e3ebee; border-radius:8px; font-size:13px }
+.reason-list strong { white-space:nowrap; color:#a55d2e }

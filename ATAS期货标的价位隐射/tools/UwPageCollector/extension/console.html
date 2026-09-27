@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>UW 页面采集助手</title><link rel="stylesheet" href="console.css"></head>
+<body><link rel="stylesheet" href="reasons.css"><main>
+<header><div><p class="eyebrow">WOLFMOSS · PAGE COLLECTOR / 0.1</p><h1>把页面行情，留成可核对的记录。</h1><p>只读取已登录页面 · 不调用付费 API · 不上传数据</p></div><span class="pill">独立实验工具</span></header>
+<section class="notice">仅采集当前页面已加载的行，不保证覆盖全部合约。Bid / Ask 数量由色条比例校验还原，不是官方原始接口；无法唯一还原时保留未知。请遵守你与数据供应商的使用约定。</section>
+<section class="panel"><h2>01 / 开始一轮采集</h2><form id="form">
+<div class="grid"><label class="wide">目标页面 <select id="target" required></select></label><button id="refresh" type="button" class="secondary">重新查找页面</button>
+<label>页面所选日期（不是到期日）<input id="date" type="date" required></label>
+<label>页面时间使用的时区<select id="zone" required><option value="">请选择并核对 UW 设置</option><option value="America/New_York">纽约交易时间（自动夏令时）</option><option value="Asia/Singapore">新加坡 / 北京时间 UTC+8</option><option value="UTC">UTC</option></select></label>
+<label>读取页面间隔<select id="seconds"><option value="2">2 秒</option><option value="5" selected>5 秒（推荐）</option><option value="10">10 秒</option><option value="30">30 秒</option></select></label></div>
+<label class="check"><input id="confirmed" type="checkbox" required>我已核对页面日期与显示时区，并确认有权保存这些数据。</label>
+<div class="actions"><button type="submit" id="start">开始采集</button><span>时间桶以表格显示为准，不从网址参数猜测。</span></div>
+</form></section>
+<div id="error" class="error" role="alert" hidden></div>
+<section class="panel"><div class="heading"><h2>02 / 本地记录</h2><button id="reload" class="secondary">更新状态</button></div>
+<label>采集轮次<select id="runs"><option>暂无记录</option></select></label>
+<div id="status" class="status" aria-live="polite">尚未开始采集</div>
+<div class="metrics"><article><span>合约时间桶</span><strong id="unique">—</strong></article><article><span>变化快照</span><strong id="revisions">—</strong></article><article><span>本页可还原 / 行数</span><strong id="quality">—</strong></article><article><span>已记录数据</span><strong id="size">—</strong></article></div>
+<section id="reasons" aria-live="polite"></section>
+<p id="detail" class="muted"></p><div class="actions"><button id="stop" class="secondary">停止本轮</button><button id="exportHtml">导出 HTML 对照报告</button><button id="export" class="secondary">导出 JSON 数据包</button><button id="delete" class="danger">删除本轮</button></div>
+<p class="muted">HTML 可直接打开，按时间桶、合约筛选并对照红灰绿比例及三侧数量；展示各桶最后保存版本。JSON 保留完整修订历史。</p>
+<p class="muted">导出包含最新记录与全部变化版本。建议停止后导出；不会自动删除。运行期间关闭此控制台不影响采集，但关闭 UW 页面、浏览器或电脑休眠会中断。</p>
+</section>
+<section class="panel"><h2>03 / 如何解读数据</h2><div class="help-grid"><div><h3>还原成功 ≠ 成交方向真值</h3><p>缺少颜色可按总量补算唯一剩余值；只有一侧且实际宽度为 100% 时，按满侧显示约定将另两侧置零。补算均单独标记。一般比例容差为最后显示位 ±1 单位，仍需持续交叉核验。</p></div><div><h3>没看见 ≠ 没成交</h3><p>结果数量、筛选、分页和虚拟列表会限制覆盖。请把目标合约留在页面结果中。本工具不自动翻页、悬停、刷新网页或绕过登录。</p></div><div><h3>结束 ≠ 最终定稿</h3><p>超过结束时间的桶标记为“已结束、仍可修订”。同一桶后续变化保留新版本；重复快照不累加成交量。</p></div><div><h3>后台页面可能降频</h3><p>保持 UW 页面可用。状态会显示实际最后读取时间、读取间断和页面后台状态；读取成功不代表上游刚刚更新。</p></div></div></section>
+<footer>数据仅保存在此浏览器扩展的本地数据库。卸载扩展或清除扩展数据会丢失未导出内容。每轮上限 64 MiB。</footer>
+</main><script src="quality.js"></script><script src="report.js"></script><script src="store.js"></script><script src="console.js"></script></body></html>

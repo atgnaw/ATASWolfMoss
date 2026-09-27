@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>IbOptionFlowProbe</AssemblyName>
+    <Version>0.6.0</Version>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="ReportView.html;ReportView.css;ReportView.js" />
+    <InternalsVisibleTo Include="IbOptionFlowProbe.Tests" />
+    <Compile Include="../../src/FuturesReferencePriceAxis/Core/UsMarketClock.cs" Link="Shared/UsMarketClock.cs" />
+    <Compile Include="../../src/FuturesReferencePriceAxis.DealerHeatmap/Core/NyseTradingCalendar.cs" Link="Shared/NyseTradingCalendar.cs" />
+    <Compile Include="../../src/FuturesReferencePriceAxis.DealerHeatmap/Core/IbTradingHoursParser.cs" Link="Shared/IbTradingHoursParser.cs" />
+    <None Update="probe.example.json;Start-Probe.ps1;Start-Probe.cmd;README.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Import Project="../../shared/WolfMoss.IB/WolfMoss.IB.props" />
+</Project>

@@ -1,0 +1,7 @@
+{
+  "name": "wolfmoss-uw-page-collector",
+  "version": "0.1.4",
+  "private": true,
+  "scripts": { "test": "node --test tests/*.test.cjs" },
+  "devDependencies": { "fake-indexeddb": "6.2.4", "jsdom": "26.1.0" }
+}
