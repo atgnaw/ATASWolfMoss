@@ -570,8 +570,12 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
     {
         var region = ChartInfo!.PriceChartContainer.Region;
         var width = Math.Max(1, Math.Min(preferredWidth, region.Width - 8));
-        var preferredHeight = 12 + lines.Count * 20;
-        var height = Math.Max(1, Math.Min(preferredHeight, region.Height - 8));
+        if (width <= 16 || region.Height <= 20) return;
+        var lineHeight = Math.Max(20, (int)Math.Ceiling((double)context.MeasureString("中Ag", ChartInfo.PriceAxisFont).Height) + 2);
+        var wrapped = StatusUiPresentation.Wrap(lines, width - 16,
+            Math.Max(0, (region.Height - 20) / lineHeight),
+            text => (int)Math.Ceiling((double)context.MeasureString(text, ChartInfo.PriceAxisFont).Width));
+        var height = 12 + wrapped.Length * lineHeight;
         var left = Math.Clamp(
             position.X + 12,
             region.Left + 4,
@@ -584,17 +588,17 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         context.FillRectangle(DrawingColor.FromArgb(245, 18, 22, 28), tooltip);
         DrawBorder(context, tooltip, ConfiguredAxisBorderColor);
 
-        for (var index = 0; index < lines.Count; index++)
+        for (var index = 0; index < wrapped.Length; index++)
         {
             context.DrawString(
-                lines[index],
+                wrapped[index],
                 ChartInfo.PriceAxisFont,
                 index == 1 ? DrawingColor.White : ConfiguredAxisTextColor,
                 new Rectangle(
                     tooltip.Left + 8,
-                    tooltip.Top + 5 + index * 20,
+                    tooltip.Top + 5 + index * lineHeight,
                     tooltip.Width - 16,
-                    20));
+                    lineHeight));
         }
     }
 

@@ -6,7 +6,7 @@ try
 {
     if (args.Length == 0 || args[0] is "--help" or "help")
     {
-        Console.WriteLine("IbOptionFlowProbe 0.5 — 独立采集、历史报价对齐与方向稳健度实验\ncapture --live --config <配置.json>\ninspect <运行目录>\ncheck-runtime（仅检查嵌入 API，不连接）\nanalyze <运行目录>\ndemo <输出目录>（生成模拟数据报告）\nbenchmark <输出目录>（10 分钟真实磁盘模拟压测）");
+        Console.WriteLine("IbOptionFlowProbe 0.9.2 — 独立采集、历史报价对齐与有限等待实验\ncapture --live --config <配置.json>\ninspect <运行目录>\ncheck-runtime（仅检查嵌入 API，不连接）\nanalyze <运行目录> [--large-qqq 100] [--large-spx 50]\ndemo <输出目录>（生成模拟数据报告）\nbenchmark <输出目录>（10 分钟真实磁盘模拟压测）");
         return 0;
     }
     if (args.Length == 1 && args[0] == "check-runtime")
@@ -15,8 +15,8 @@ try
         Console.WriteLine(gateway.IsAvailable ? "PASS: 嵌入 IB API 已加载；没有连接 Gateway。" : "FAIL: 嵌入 IB API 无法加载。");
         return gateway.IsAvailable ? 0 : 1;
     }
-    if (args[0] == "analyze" && args.Length == 2)
-    { await AnalysisRunner.RunAsync(args[1]); return 0; }
+    if (args[0] == "analyze" && args.Length >= 2)
+    { await AnalysisRunner.RunAsync(args[1], LargeTradeSettings.Parse(args.Skip(2).ToArray())); return 0; }
     if (args[0] == "demo" && args.Length == 2)
     { await AnalysisRunner.RunAsync(await ProbeDemo.CreateAsync(args[1])); return 0; }
     if (args[0] == "benchmark" && args.Length == 2)
@@ -43,7 +43,7 @@ try
         Console.Error.WriteLine(capture.Summary.Complete
             ? "采集已完整完成，原始文件已保存；但离线报告生成失败。无需重新采集。"
             : "采集未完整完成，已有原始文件已保存；离线报告也生成失败。");
-        if (ex is ArgumentException) Console.Error.WriteLine(ex.Message);
+        if (ex is ArgumentException or TraceStorageException) Console.Error.WriteLine(ex.Message);
         Console.Error.WriteLine($"修复后可重试：IbOptionFlowProbe.exe analyze \"{capture.Directory}\"");
         return capture.Summary.Complete ? 3 : 4;
     }

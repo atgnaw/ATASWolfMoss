@@ -14,8 +14,13 @@
   function countRange(volume, percent) {
     const m = /^(\d+)(?:\.(\d{1,12}))?%$/.exec(percent ?? '');
     if (!m) return null;
-    const scale = 10n ** BigInt((m[2] || '').length);
-    const p = BigInt(m[1] + (m[2] || ''));
+    // UW omits trailing zeroes in CSS widths: 20% can be the exact ratio
+    // 50/250, while 12/215 is displayed as 5.5814%. Do not treat 20%
+    // as an integer-rounded display with a whole percentage point of error.
+    // Retain a small four-decimal-point guard for observed CSS formatting.
+    const decimals = Math.max(4, (m[2] || '').length);
+    const scale = 10n ** BigInt(decimals);
+    const p = BigInt(m[1] + (m[2] || '').padEnd(decimals, '0'));
     if (p > 100n * scale) return null;
     // Conservative ± one last displayed decimal unit: includes rounding/truncation uncertainty.
     const v = BigInt(volume), denominator = 100n * scale;
@@ -25,7 +30,7 @@
   }
   function reconstruct(volume, widths) {
     const result = { status: 'UNVERIFIED', counts: null, ranges: null,
-      method: 'css-percent-integer-sum-v2', tolerance: '±1 last displayed decimal unit; not tooltip-verified' };
+      method: 'css-percent-integer-sum-v3', tolerance: '±0.0001 percentage point or ±1 finer displayed decimal unit; not tooltip-verified' };
     if (volume === null || !Number.isSafeInteger(volume) || volume < 0 || volume > 1e9) return { ...result, reason: 'INVALID_VOLUME' };
     if (widths.length !== 3) return { ...result, reason: 'INVALID_SEGMENTS' };
     const missing = widths.map(w => w == null || w === '');

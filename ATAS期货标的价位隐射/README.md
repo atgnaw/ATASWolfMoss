@@ -150,6 +150,8 @@ Futures Reference Price Axis Pro / 期货现货映射轴 Pro（Dealer Heatmap）
 
 ## 设置
 
+Pro 2.4.0 新增固定桶 **“显示主动买入强度”**（默认关闭）：原权利金条长不变，亮度独立使用233全部成交；方法差超过1个百分点显示灰色标记。详见 [使用说明与验证记录](docs/flow-buy-strength.md)。
+
 - `Pair / 映射组合`：自动识别，或强制选择 NQ/QQQ、ES/SPX。
 - `Mode / 模式`：自动或手动。
 - `Manual ratio / 手动比例`：期货价除以参考价；`0` 表示未配置。自动冷启动失败时也会用它兜底。

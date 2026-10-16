@@ -42,6 +42,16 @@ test('补算和中文未知原因、零量、联合筛选及空结果', () => {
   assert.equal(doc.querySelector('#total').textContent,'1');
   dom.window.close();
 });
+test('旧轮次重算在报告中标示新旧判定', () => {
+  const data = fixture();
+  data.analysisVersion = '0.1.5'; data.reanalyzedLatestRows = 1;
+  data.latest[0].baAtCapture = { status: 'UNVERIFIED', reason: 'MISSING_SEGMENT', counts: null };
+  const dom = open(data);
+  assert.match(dom.window.document.body.textContent, /1 行的判定与采集时不同/);
+  assert.match(dom.window.document.querySelector('tbody details').textContent,
+    /采集时状态：UNVERIFIED \/ MISSING_SEGMENT/);
+  dom.window.close();
+});
 test('导出不执行页面文本，运行提示与空轮次正确', () => {
   const data=fixture(); data.run.status='RUNNING';
   data.latest[0].raw.label='</p><script>globalThis.PWNED=1</script><img src=x onerror="alert(1)">';

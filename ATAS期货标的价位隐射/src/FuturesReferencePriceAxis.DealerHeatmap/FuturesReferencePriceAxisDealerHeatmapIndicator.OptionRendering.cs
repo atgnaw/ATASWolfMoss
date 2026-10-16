@@ -140,8 +140,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
                 ? DrawingColor.FromArgb(130, OptionCallColor) : OptionCallColor;
             var putColor = !useOpenInterest && row.PutFlowRetained
                 ? DrawingColor.FromArgb(130, OptionPutColor) : OptionPutColor;
+            if (!useOpenInterest && BuyStrengthActive)
+            {
+                callColor = prepared.CallStrengthColor;
+                putColor = prepared.PutStrengthColor;
+            }
             DrawOptionLane(context, callRect, callValue, maximum, callColor, prepared.CallLabel);
             DrawOptionLane(context, putRect, putValue, maximum, putColor, prepared.PutLabel);
+            if (!useOpenInterest && BuyStrengthActive)
+            {
+                DrawStrengthMarker(context, callRect, row.CallBuyStrength);
+                DrawStrengthMarker(context, putRect, row.PutBuyStrength);
+            }
 
             if (atmStrike.HasValue && row.StrikeUsd == atmStrike.Value)
                 DrawBorder(context, rowRect.Value, OptionAtmColor);
@@ -173,6 +183,18 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 
         context.FillRectangle(OptionTrackBackground, track);
         DrawOptionBar(context, track, value.Value, maximum, color, label);
+    }
+
+    private void DrawStrengthMarker(RenderContext context, Rectangle track, OptionBuyStrength? strength)
+    {
+        var marker = (strength ?? OptionBuyStrength.Missing).Marker;
+        if (marker.Length == 0) return;
+        var box = new Rectangle(Math.Max(track.Left, track.Right - 12), track.Top, Math.Min(12, track.Width), track.Height);
+        context.FillRectangle(OptionTrackBackground, box);
+        if (track.Height >= 9 && track.Width >= 12)
+            context.DrawString(marker, ChartInfo!.PriceAxisFont, DrawingColor.White, box, LeftCenteredStringFormat);
+        else
+            context.FillRectangle(DrawingColor.LightGray, new Rectangle(box.Left, box.Top, Math.Min(3, box.Width), Math.Min(3, box.Height)));
     }
 
     private void DrawOptionBar(
@@ -297,17 +319,23 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
         var lines = new List<string>
         {
             $"{snapshot.Ticker} {row.StrikeUsd.ToString("0.####", CultureInfo.InvariantCulture)} {right}",
-            $"Premium {(premium.HasValue ? premium.Value.ToString("#,0.##", CultureInfo.InvariantCulture) : "--")}",
-            $"Volume {(volume.HasValue ? volume.Value.ToString("#,0", CultureInfo.InvariantCulture) : "--")}",
-            $"Expiration {snapshot.Expiration:yyyy-MM-dd}",
-            $"Position {location}",
-            $"{snapshot.IntervalMinutes}m {snapshot.BucketMode} / {snapshot.TradeScope}",
-            $"Bucket {FormatOptionalOptionTime(snapshot.BucketStartUtc)} - {FormatOptionalOptionTime(snapshot.BucketEndUtc)}",
-            $"Coverage {coverage}",
-            $"Observed from {FormatOptionalOptionTime(observedStartUtc)}",
-            $"Session {session}",
-            $"Received {FormatDealerTime(snapshot.ReceivedUtc)}"
+            $"权利金 {(premium.HasValue ? premium.Value.ToString("#,0.##", CultureInfo.InvariantCulture) : "--")} / 张数 {(volume.HasValue ? volume.Value.ToString("#,0.##", CultureInfo.InvariantCulture) : "--")}",
+            $"到期 {snapshot.Expiration:yyyy-MM-dd} / {location}",
+            $"{snapshot.IntervalMinutes}分钟 · {(snapshot.BucketMode == OptionFlowBucketMode.Rolling ? "滚动" : "上一完整固定桶")} · {session}",
+            $"桶时间 {FormatOptionalOptionTime(snapshot.BucketStartUtc)} — {FormatOptionalOptionTime(snapshot.BucketEndUtc)}",
+            $"观察 {FormatOptionalOptionTime(observedStartUtc)} 起 · {coverage}",
+            $"更新 {FormatDealerTime(snapshot.ReceivedUtc)}",
+            "条长/金额：" + (snapshot.TradeScope == OptionFlowTradeScope.RegularTrades ? "375常规成交" : "233全部成交")
         };
+        if (_showOptionBuyStrength)
+        {
+            if (snapshot.BucketMode == OptionFlowBucketMode.Rolling)
+                lines.Add("主动买入强度：仅支持固定桶；滚动模式保持原显示");
+            else
+            {
+                lines.AddRange(OptionStrengthPresentation.Details(right == OptionRight.Call ? row.CallBuyStrength : row.PutBuyStrength));
+            }
+        }
         if (snapshot.BucketMode == OptionFlowBucketMode.Rolling)
         {
             lines.Add(retained
@@ -318,7 +346,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             if (isPartial)
                 lines.Add("* PARTIAL / 仅统计已观察到的部分成交");
         }
-        DrawTooltip(context, MouseLocationInfo!.LastPosition, lines.ToArray(), 420);
+        DrawTooltip(context, MouseLocationInfo!.LastPosition, lines.ToArray(), 520);
     }
 
     private bool TryGetHoveredOptionRow(

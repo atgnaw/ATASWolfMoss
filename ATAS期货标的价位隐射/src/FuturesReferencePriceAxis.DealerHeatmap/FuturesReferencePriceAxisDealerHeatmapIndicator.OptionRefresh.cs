@@ -721,7 +721,7 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
 
         if (oiSnapshot != null) SetOptionOpenInterestSnapshot(oiSnapshot);
-        if (flowSnapshot != null) SetOptionFlowSnapshot(flowSnapshot);
+        if (flowSnapshot != null) SetOptionFlowSnapshot(AddBuyStrength(flowSnapshot));
         var activeLines = GetOptionActiveLineCount();
         if (activeLines != _publishedOptionLineCount)
         {

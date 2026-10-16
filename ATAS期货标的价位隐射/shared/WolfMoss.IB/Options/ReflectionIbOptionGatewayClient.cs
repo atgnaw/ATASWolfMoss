@@ -462,6 +462,7 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
     private void HandleCallback(MethodInfo method, object?[] args)
     {
         ObserveRawCallback(method.Name, args);
+        ObserveBuyStrength(method.Name, args);
         try
         {
             switch (method.Name)
@@ -749,6 +750,16 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
         var requestId = NextRequestId();
         subscription.RequestId = requestId;
         subscription.Requirements = requirements;
+        if (requirements.BuyStrength && _strengthCalendar is { } calendar)
+        {
+            subscription.Strength ??= new OptionBuyStrengthState(subscription.Contract, calendar(subscription.Contract));
+            subscription.Strength.Start(requestId, DateTime.UtcNow);
+        }
+        else
+        {
+            subscription.Strength?.Stop(DateTime.UtcNow); subscription.Strength = null;
+            if (!_subscriptionsByConId.Values.Any(s => s.Requirements.BuyStrength)) _retiredStrength.Clear();
+        }
         _subscriptionsByRequest[requestId] = subscription;
         var contract = CreateContractFromDescriptor(subscription.Contract);
         var options = CreateEmptyTagValueList();
@@ -968,7 +979,9 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
                 }
 
                 RecordHistoryEnd(shared, "SUBSCRIPTION_ENDED");
+                RetireBuyStrength(shared, DateTime.UtcNow);
                 _subscriptionsByConId.Remove(conId);
+                if (!_subscriptionsByConId.Values.Any(s => s.Requirements.BuyStrength)) _retiredStrength.Clear();
                 if (shared.RequestId != 0)
                 {
                     _subscriptionsByRequest.TryRemove(shared.RequestId, out _);
@@ -1280,9 +1293,12 @@ internal sealed partial class ReflectionIbOptionGatewayClient : IIbOptionGateway
     private sealed class SharedSubscription(OptionContractDescriptor contract)
     {
         public int FailureCode, RecoveryAttempts;
+        public int StrengthRecoveryAttempts;
+        public DateTime StrengthRetryAfterUtc;
         public DateTime RetryAfterUtc;
         public ReflectionIbOptionGatewayClient? HistoryOwner;
         public IbHistoryObservation? History;
+        public OptionBuyStrengthState? Strength;
         public OptionContractDescriptor Contract { get; } = contract;
 
         public Dictionary<long, Action<IbOptionMarketDataUpdate>> Consumers { get; } = new();

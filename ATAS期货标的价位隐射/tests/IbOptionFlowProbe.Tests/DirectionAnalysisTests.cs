@@ -79,9 +79,10 @@ internal static class DirectionAnalysisTests
             var d = f.Trade(1000, 1100, 101, 1);
             Check(d.StableSign == -1 && d.FeasibleSourceCandidates == 4 && d.DistinctQuoteStates == 1);
             Check(d.Alignments.Single(x => x.Id == "Source+250").Error == "FUTURE_CANDIDATE");
-            var before = System.Text.Json.JsonSerializer.Serialize(d, ProbeJson.Options);
+            string Original() => System.Text.Json.JsonSerializer.Serialize(new { d.Matches, d.Alignments, d.Consensus, d.StableSign, d.StableReason }, ProbeJson.Options);
+            var before = Original();
             f.Quote(1101, 1, 2);
-            Check(before == System.Text.Json.JsonSerializer.Serialize(d, ProbeJson.Options));
+            Check(before == Original());
             return Task.CompletedTask;
         });
         await test("source ahead cannot create false source consensus", () =>
@@ -136,7 +137,7 @@ internal static class DirectionAnalysisTests
             for (var i = 0; i < 35; i++) f.Trade(61000 + i * 100, 61100 + i * 100, 101 + i, 1);
             var report = f.Finish(); var r = report.Buckets.Single(x => x.IntervalMinutes == 1 && x.StartUtc == f.Start.AddMinutes(1));
             Check(r.Events == 35 && r.Primary.Sell == 3500 && r.Primary.Metrics.Total == 3500);
-            Check(r.Scenarios.Count == 36 && r.Scenarios.Values.All(x => x.Metrics.Total == 3500));
+            Check(r.Scenarios.Count == 51 && r.Scenarios.Values.All(x => x.Metrics.Total == 3500));
             Check(r.Status == "SELL" && r.HighestPassedPressure == .05m);
             Check(r.LargestPremiums.Sum() == 500 && r.Quality.Contains("RECONCILIATION_BOUNDARY"));
             return Task.CompletedTask;
@@ -246,7 +247,7 @@ internal static class DirectionAnalysisTests
             return Task.CompletedTask;
         });
     }
-    private sealed class Fixture
+    internal sealed class Fixture
     {
         public DateTime Start = new(2026, 9, 16, 13, 30, 0, DateTimeKind.Utc);
         public OptionContractDescriptor Contract = new(1, "QQQ", new(2026, 9, 16), 100, OptionRight.Call, "QQQ", "SMART", 100, "20260916:0930-20260916:1600");

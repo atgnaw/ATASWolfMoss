@@ -211,7 +211,7 @@ internal static class AnalysisTests
             using var json = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(result.Directory, "report.json")));
             Check(json.RootElement.GetProperty("schema_version").GetInt32() == 3, "New evidence schema must be version 3");
             Check(json.RootElement.GetProperty("robustness").GetProperty("buckets").GetArrayLength() > 0);
-            Check(json.RootElement.GetProperty("robustness").GetProperty("settings").GetProperty("scenarios").GetArrayLength() == 36);
+            Check(json.RootElement.GetProperty("robustness").GetProperty("settings").GetProperty("scenarios").GetArrayLength() == 51);
             var html = await File.ReadAllTextAsync(Path.Combine(result.Directory, "report.html"));
             Check(html.Contains("抗误判余量") && html.Contains("robust-method") && html.Contains("robust-page"));
         });

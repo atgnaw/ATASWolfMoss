@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict'),{latestScore}=require('../../tools/IbOptionFlowProbe/LatestScore.cjs');
+const q=age=>({id:'latest',bid_age_ms:age,ask_age_ms:age});
+const m={scenario_id:'Latest/Midpoint/100',alignment_id:'latest',sign:1,reason:'AT_ASK'};
+const c={scenario_id:'Conditional/Midpoint/50',sign:1,reason:'AT_ASK',branch:'LARGE_AGREE'};
+const e={is_large_trade:true,alignments:[q(50)],conditional_next_quote:q(50),conditional_simulated_quote:q(50),conditional_matches:[c]};
+assert.equal(latestScore(m,e).branch,'LARGE_AGREE');
+assert.equal(latestScore({...m,sign:0,reason:'QUOTE_TOO_OLD'},e).branch,'LARGE_CURRENT_UNSCORABLE');
+assert.equal(latestScore(m,{...e,alignments:[q(101)]}).branch,'LARGE_CURRENT_UNSCORABLE');
+assert.equal(latestScore(m,{...e,conditional_next_quote:q(101)}).branch,'LARGE_AUXILIARY_TOO_OLD');
+assert.equal(latestScore({...m,scenario_id:'Latest/Midpoint/-1'},{...e,alignments:[q(10000)],conditional_next_quote:q(10000)}).branch,'LARGE_AGREE');
+assert.equal(latestScore(m,{...e,is_large_trade:false}).branch,'SMALL_LATEST');
+assert.equal(latestScore(m,{...e,conditional_matches:[{...c,branch:'LARGE_TIMEOUT'}]}).branch,'LARGE_TIMEOUT');
+assert.equal(latestScore(m,{...e,conditional_matches:[{...c,branch:'LARGE_MERGED',sign:-1}],conditional_simulated_quote:q(101)}).branch,'LARGE_AUXILIARY_TOO_OLD');
+assert.equal(m.sign,1);console.log('PASS latest scoring gates: current/next/simulated ages, unknown, no limit, small and timeout; original match unchanged');

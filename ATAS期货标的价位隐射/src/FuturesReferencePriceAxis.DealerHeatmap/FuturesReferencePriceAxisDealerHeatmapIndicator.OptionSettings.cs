@@ -8,6 +8,25 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
 {
     private bool _showOptionOpenInterest;
     private bool _showOptionPremiumFlow;
+    private bool _showOptionBuyStrength;
+    private DateTime _buyStrengthEnabledUtc;
+    private bool BuyStrengthActive => _showOptionBuyStrength && _showOptionPremiumFlow
+        && _optionFlowBucketMode == OptionFlowBucketMode.PreviousCompletedFixed;
+
+    [Display(Name = "显示主动买入强度", GroupName = "IB Gateway / 期权数据", Order = 315,
+        Description = "仅固定桶；条长口径不变，颜色固定用233全部成交。方法差超过1个百分点显示灰色×；Put亮表示买入Put，不代表看涨。")]
+    public bool ShowOptionBuyStrength
+    {
+        get => _showOptionBuyStrength;
+        set
+        {
+            if (_showOptionBuyStrength == value) return;
+            _showOptionBuyStrength = value;
+            _buyStrengthEnabledUtc = RealtimeUtcNow();
+            _strengthBaseRows = null;
+            ReconfigureOptionData();
+        }
+    }
     private int _optionStrikeLevels = 21;
     private int _optionFlowIntervalMinutes = 5;
     private OptionFlowBucketMode _optionFlowBucketMode =

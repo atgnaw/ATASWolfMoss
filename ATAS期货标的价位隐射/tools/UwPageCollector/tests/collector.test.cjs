@@ -47,9 +47,18 @@ test('另外四条页面样本的数学一致性（非人工真值）', () => {
     assert.deepEqual(result.counts, { bid: expected[0], ask: expected[1], neutral: expected[2] });
   }
 });
-test('缺段且其他比例精度不足时仍保留未知', () => {
+test('大成交量下比例精度确实不足时仍保留未知', () => {
   for (let i = 0; i < 3; i++) { const widths = ['50%', '0%', '50%']; widths[i] = null;
-    assert.equal(Core.reconstruct(100, widths).reason, 'MISSING_SEGMENT'); }
+    assert.equal(Core.reconstruct(10000000, widths).reason, 'MISSING_SEGMENT'); }
+});
+test('UW 省略整百分比尾部零位：同页整数和小数宽度按共同精度还原', () => {
+  assert.deepEqual(Core.reconstruct(215, ['5.5814%', null, '94.4186%']).counts,
+    { bid: 12, ask: 203, neutral: 0 });
+  assert.deepEqual(Core.reconstruct(135, ['20%', null, '80%']).counts,
+    { bid: 27, ask: 108, neutral: 0 });
+  assert.deepEqual(Core.reconstruct(250, ['20%', null, '80%']).counts,
+    { bid: 50, ask: 200, neutral: 0 });
+  assert.equal(Core.reconstruct(3, ['20%', null, '80%']).reason, 'INCONSISTENT_SUM');
 });
 test('单侧 DOM 满宽支持纯红、纯绿、纯灰，并标明规则假设', () => {
   for (let i = 0; i < 3; i++) {
@@ -70,7 +79,7 @@ test('缺灰色零数量、非零剩余均可补算；整条缺失或残余多�
   assert.equal(Core.reconstruct(1000, ['70%',null,'60%']).reason, 'INCONSISTENT_SUM');
 });
 test('低精度、多解、不一致、非法数字和极大数量', () => {
-  assert.equal(Core.reconstruct(250, ['38%', '26%', '36%']).reason, 'AMBIGUOUS_INTEGER');
+  assert.equal(Core.reconstruct(10000000, ['38%', '26%', '36%']).reason, 'AMBIGUOUS_INTEGER');
   assert.equal(Core.reconstruct(100, ['80%', '30%', '50%']).reason, 'INCONSISTENT_SUM');
   assert.equal(Core.reconstruct(100, ['101%', '0%', '0%']).reason, 'INVALID_PERCENT');
   assert.equal(Core.reconstruct(100, ['NaN%', '0%', '0%']).counts, null);
@@ -153,6 +162,43 @@ test('IndexedDB：重复不累加，修订保留、导出一致、事务失败�
   await assert.rejects(store.remove(run.id), /停止/);
   full.status = 'STOPPED'; await store.put(full); await store.remove(run.id);
   assert.equal((await store.exported(run.id)).latest.length, 0);
+});
+test('旧轮次导出按新宽度规则重算，保留采集时判定且不改数据库', async () => {
+  global.indexedDB = indexedDB; require('../extension/store.js');
+  const store = global.UwStore, page = read(), id = 'old-width-rule';
+  page.rows[0] = { ...page.rows[0], volume: '250', bidPercent: '20%',
+    neutralPercent: null, askPercent: '80%' };
+  const run = { id, version: '0.1.4', status: 'RUNNING', config, url: page.url,
+    dateLabel: page.dateLabel, headers: page.headers, startedUtc: '2026-09-21T18:30:00Z',
+    bytes: 0, sequence: 0, uniqueRows: 0, polls: 0, gaps: 0, maxGapMs: 0, emptyPolls: 0 };
+  await store.put(run); await store.append(id, page, '2026-09-21T18:31:00Z');
+  const db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open('uw-page-collector-v1');
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(['latest', 'revisions'], 'readwrite');
+    for (const [name, key] of [['latest', [id, Core.parseRow(page.rows[0], config).key]], ['revisions', [id, 1]]]) {
+      const target = tx.objectStore(name), request = target.get(key);
+      request.onsuccess = () => { target.put({ ...request.result,
+        ba: { status: 'UNVERIFIED', reason: 'MISSING_SEGMENT', counts: null,
+          method: 'css-percent-integer-sum-v2' } }); };
+    }
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+  });
+  const exported = await store.exported(id);
+  assert.equal(exported.analysisVersion, '0.1.5');
+  assert.equal(exported.reanalyzedLatestRows, 1);
+  assert.deepEqual(exported.latest[0].ba.counts, { bid: 50, ask: 200, neutral: 0 });
+  assert.equal(exported.latest[0].baAtCapture.reason, 'MISSING_SEGMENT');
+  assert.deepEqual(exported.revisions[0].ba.counts, exported.latest[0].ba.counts);
+  const stored = await new Promise((resolve, reject) => {
+    const tx = db.transaction('latest', 'readonly');
+    const request = tx.objectStore('latest').get([id, exported.latest[0].key]);
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  assert.equal(stored.ba.status, 'UNVERIFIED');
+  db.close();
 });
 test('所有 JS 语法有效，扩展无远程脚本、无 cookies/debugger/webRequest 权限', () => {
   const dir = path.join(__dirname, '../extension');

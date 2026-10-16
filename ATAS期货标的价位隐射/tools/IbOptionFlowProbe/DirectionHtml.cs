@@ -25,7 +25,7 @@ internal static class DirectionHtml
     private static object ViewAmount(DirectionAmounts a)
     {
         var m = a.Metrics;
-        return new { a.Buy, a.Sell, a.Mid, a.Unknown, a.UnknownPremiums, a.UnknownCounts, a.UnresolvedGroups,
+        return new { a.Buy, a.Sell, a.Mid, a.Unknown, a.UnknownPremiums, a.UnknownCounts, a.UnresolvedGroups, a.WaitCounts, a.WaitPremiums, a.WaitVolumes,
             Metrics = new { m.Total, m.Tendency, m.Coverage, m.Lower, m.Upper, m.ErrorTolerance } };
     }
     private static object ViewRow(DirectionBucket r) => new

@@ -34,10 +34,14 @@ public sealed partial class FuturesReferencePriceAxisDealerHeatmapIndicator
             return;
         }
 
+        if (BuyStrengthActive) GetOrCreateOptionGateway().ConfigureBuyStrengthCalendar(static c => new(
+            IbTradingHoursParser.Parse(c.TradingHours, c.TradingTimeZoneId, c.Ticker == "SPX").ToArray(),
+            IbTradingHoursParser.Parse(c.TradingHours, c.TradingTimeZoneId, false).ToArray()));
         var requirements = new IbOptionSubscriptionRequirements(
             true, // Daily OI on existing Flow lines; never re-subscribe just to toggle the OI column.
             _optionFlowTradeScope == OptionFlowTradeScope.RegularTrades,
-            _optionFlowTradeScope == OptionFlowTradeScope.AllTimeAndSales);
+            _optionFlowTradeScope == OptionFlowTradeScope.AllTimeAndSales,
+            BuyStrengthActive);
         if (_optionSubscription != null)
         {
             var ids = contracts.Select(static c => c.ConId).Order().ToArray();

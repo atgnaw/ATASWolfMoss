@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict'),{comparisonWindow,exclusion}=require('../../tools/IbOptionFlowProbe/CompareWindow.cjs');
+const row=(start,status='RECONSTRUCTED')=>({bucket:{startUtc:start,endUtc:new Date(Date.parse(start)+300000).toISOString()},ba:{status,counts:{bid:1,ask:2,neutral:0}},volume:3});
+const uw={run:{config:{date:'2026-09-28',timezone:'America/New_York'}},latest:[row('2026-09-28T19:30:00Z'),row('2026-09-28T19:35:00Z'),row('2026-09-28T20:00:00Z')]};
+const w=comparisonWindow(uw,{capture_started_utc:'2026-09-28T19:32:47Z',ended_utc:'2026-09-28T20:00:00Z'});
+assert.equal(w.startLabel,'15:35');assert.equal(w.endLabel,'16:00');assert.equal(w.excludedFinalLabel,'16:00–16:05');
+assert.equal(exclusion(uw.latest[0],w,true),'outsideWindow');assert.equal(exclusion(uw.latest[2],w,true),'finalUwBucket');
+assert.equal(exclusion(uw.latest[1],w,true),null);assert.equal(exclusion(uw.latest[1],w,false),'unsubscribed');
+assert.equal(exclusion(row('2026-09-28T19:35:00Z','UNVERIFIED'),w,true),'invalidCounts');
+assert.equal(exclusion({...uw.latest[1],volume:4},w,true),'invalidCounts');
+assert.equal(exclusion(row('2026-09-29T19:35:00Z'),w,true),'invalidBucket');
+const shorter=comparisonWindow(uw,{capture_started_utc:'2026-09-28T19:32:47Z',ended_utc:'2026-09-28T20:00:00Z'},'2026-09-28T19:55:00Z');
+assert.equal(shorter.endLabel,'15:55');assert.equal(exclusion(row('2026-09-28T19:55:00Z'),shorter,true),'requestedEnd');
+assert.equal(exclusion(row('2026-09-28T19:50:00Z'),shorter,true),null);
+console.log('PASS window date, partial first bucket, final UW bucket, failed reconstruction and identity exclusions');

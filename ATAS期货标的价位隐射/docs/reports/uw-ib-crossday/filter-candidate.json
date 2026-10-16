@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "status": "EXPLORATORY_NOT_PROSPECTIVELY_VALIDATED",
+  "classification": {
+    "scope": "AllTimeAndSales",
+    "alignment": "Latest",
+    "method": "Midpoint",
+    "maximumQuoteAgeMs": -1,
+    "outsideQuoteDirectionOverride": true
+  },
+  "filter": {
+    "feature": "ABS_MIDPOINT_BUY_SHARE_MINUS_ATQUOTE_BUY_SHARE",
+    "referenceMethod": "AtQuote",
+    "maximumGap": 0.01,
+    "denominator": "BUY_PLUS_SELL_VOLUME",
+    "volumeUnit": "CONTRACTS",
+    "bucketMinutes": 5,
+    "requireSameScopeAlignmentAgeU15AndBucket": true,
+    "incomparableOrNoDirectionalVolume": "UNSCORABLE_DO_NOT_AUTO_KEEP",
+    "doNotChangeTradeClassifications": true,
+    "doNotDeleteRejectedBuckets": true
+  },
+  "researchDates": ["2026-09-23", "2026-09-28", "2026-09-29"],
+  "scopeNotes": "All UW final buckets and unreconstructed rows excluded; 2026-09-28 also excludes 15:55-16:00 America/New_York.",
+  "evaluationWarning": "Threshold family was selected after exploring these dates. Requires a new-date frozen-rule evaluation before claiming prospective reliability. No UW field is used at inference time."
+}

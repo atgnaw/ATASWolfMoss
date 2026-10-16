@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "UW 页面采集助手",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "只读取已登录的 Interval Flow 页面，保存可追溯快照与经校验的 B/A 数量。",
   "host_permissions": ["https://unusualwhales.com/*"],
   "background": { "service_worker": "background.js" },

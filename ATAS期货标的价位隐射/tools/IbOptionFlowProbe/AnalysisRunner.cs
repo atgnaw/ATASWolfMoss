@@ -2,10 +2,13 @@ using System.Text.Json;
 
 namespace IbOptionFlowProbe;
 
+internal sealed class TraceStorageException(string message) : IOException(message);
+
 internal static class AnalysisRunner
 {
-    public static async Task<(string Directory, AnalysisReport Report)> RunAsync(string directory)
+    public static async Task<(string Directory, AnalysisReport Report)> RunAsync(string directory, LargeTradeSettings? largeTrades = null)
     {
+        largeTrades ??= new(); largeTrades.Validate();
         directory = Path.GetFullPath(directory);
         var manifest = await ReadAsync<ProbeManifest>(Path.Combine(directory, "manifest.json"))
             ?? throw new ArgumentException("缺少运行清单，不能确认时钟频率和合约身份。");
@@ -23,12 +26,19 @@ internal static class AnalysisRunner
         // If interrupted, recover an observed end from the raw log in the same streaming pass;
         // all bucket completions remain conservatively partial without a final summary.
         var engine = new ProbeAnalyzer(manifest.MonotonicFrequency, summary?.CaptureStartedUtc ?? manifest.CreatedUtc, end);
-        var direction = new DirectionAnalyzer(manifest.MonotonicFrequency, summary?.CaptureStartedUtc ?? manifest.CreatedUtc, end);
-        var outside = new DirectionAnalyzer(manifest.MonotonicFrequency, summary?.CaptureStartedUtc ?? manifest.CreatedUtc, end, true);
+        var direction = new DirectionAnalyzer(manifest.MonotonicFrequency, summary?.CaptureStartedUtc ?? manifest.CreatedUtc, end, false, largeTrades);
+        var outside = new DirectionAnalyzer(manifest.MonotonicFrequency, summary?.CaptureStartedUtc ?? manifest.CreatedUtc, end, true, largeTrades);
         void BreakDirection(string reason, DateTime? at = null) { direction.Break(reason, at); outside.Break(reason, at); }
         var output = Path.Combine(directory, "analysis-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(output);
         await using var trace = new TraceWriter(output);
+        var pendingTrace = new Queue<TradeDecision>();
+        async Task FlushTrace()
+        {
+            while (pendingTrace.TryPeek(out var next) && next.DirectionEvidence?.Ready != false && next.OutsideQuoteEvidence?.Ready != false)
+                await trace.WriteAsync(pendingTrace.Dequeue());
+            if (pendingTrace.Count > 65536) throw new IOException("待完成逐笔证据超过保护上限。");
+        }
         long lastSequence = 0, lastMonotonic = 0;
         foreach (var file in Directory.GetFiles(directory, "events-*.jsonl").Order(StringComparer.Ordinal))
         {
@@ -51,9 +61,11 @@ internal static class AnalysisRunner
                 var decision = engine.Process(reparsed);
                 var evidence = direction.Process(reparsed, decision, summary?.Complete == true && item.Raw.ReceivedUtc >= end.AddSeconds(-1));
                 var outsideEvidence = outside.Process(reparsed, decision, summary?.Complete == true && item.Raw.ReceivedUtc >= end.AddSeconds(-1));
-                if (decision != null) await trace.WriteAsync(decision with { DirectionEvidence = evidence, OutsideQuoteEvidence = outsideEvidence });
+                if (decision != null) pendingTrace.Enqueue(decision with { DirectionEvidence = evidence, OutsideQuoteEvidence = outsideEvidence });
+                await FlushTrace();
             }
         }
+        direction.CompleteWaiting(); outside.CompleteWaiting(); await FlushTrace();
         engine.AddMissingRows(known.Values);
         var totals = engine.Rows(0);
         var warnings = new List<string>
@@ -80,7 +92,9 @@ internal static class AnalysisRunner
             ? "INSUFFICIENT_SAMPLE" : "RECEIVE_ORDER_ESTIMATE_ONLY";
         warnings.Add("新增 2000/5000 ms 与无年龄上限对照（maximum_age_ms=-1）。无上限不表示报价始终有效，也不证明方向准确；原四组分类规则保持不变，阈值变化事件现按七组计算。");
         warnings.Add("总体稳健度仅是条件性压力测试，不是方向正确概率；源时间偏移为预设实验假设，不是测得的网络延迟。报价一致可能来自同一状态，不算独立证据。");
-        var report = new AnalysisReport(3, "0.6.0", manifest.RunId, manifest.Synthetic, integrity, conclusion,
+        warnings.Add("前后报价合并＋有限等待：50/100/200/400 毫秒内第一次价格变化后的报价，与前报价取最低 Bid、最高 Ask 组成模拟报价后分类；不再比较两次方向是否一致。模拟报价可能从未同时存在于市场。超时仅用前报价，中断未等满则未知；旧即时规则不变。");
+        warnings.Add($"条件式大单对齐：QQQ ≥{largeTrades.QqqContracts} 张，SPX ≥{largeTrades.SpxContracts} 张。普通成交只用接收时最新报价；大单最多等 50 ms，第一次价格更新无效立即回退前报价，不再寻找后续报价；到期无后报价也回退前报价。前报价无效或等待中断仍未知。同买/同卖/同中性取一致结果，否则用前后最低 Bid、最高 Ask 合并分类。未知不算一致；无效报价不被修复。阈值是实验参数，不是大单行业标准。");
+        var report = new AnalysisReport(3, "0.9.2", manifest.RunId, manifest.Synthetic, integrity, conclusion,
             warnings.ToArray(), engine.RawEvents, engine.TradeCallbacks, engine.AcceptedTrades, engine.Boundaries,
             engine.Diagnostics, totals, engine.Rows().Where(x => x.IntervalMinutes > 0).ToArray())
             { Robustness = direction.Finish(engine.Rows(), integrity), OutsideQuoteRobustness = outside.Finish(engine.Rows(), integrity) };
@@ -95,14 +109,28 @@ internal static class AnalysisRunner
 
     private sealed class TraceWriter(string directory) : IAsyncDisposable
     {
+        // A single trade carries all alignment scenarios in its evidence. The expanded
+        // JSONL trace can be several times larger than the capped 2 GiB raw capture.
+        private const long MaxTraceBytes = 16L * 1024 * 1024 * 1024;
+        private const long MinimumFreeBytes = 1024L * 1024 * 1024;
+        private const long DiskCheckIntervalBytes = 32L * 1024 * 1024;
         private FileStream? _file;
         private int _part;
-        private long _bytes, _partBytes;
+        private long _bytes, _partBytes, _nextDiskCheckBytes;
+        private readonly DriveInfo _drive = new(Path.GetPathRoot(directory)!);
         private static readonly byte[] Newline = [(byte)'\n'];
         public async Task WriteAsync(TradeDecision decision)
         {
             var bytes = JsonSerializer.SerializeToUtf8Bytes(decision, ProbeJson.Options);
-            if (_bytes + bytes.Length + 1 > 2L * 1024 * 1024 * 1024) throw new IOException("Analysis trace size limit reached.");
+            var nextBytes = bytes.Length + 1;
+            if (_bytes > MaxTraceBytes - nextBytes)
+                throw new TraceStorageException("分析逐笔证据达到 16 GiB 安全上限；原始采集文件未受影响。");
+            if (_bytes >= _nextDiskCheckBytes)
+            {
+                if (_drive.AvailableFreeSpace < MinimumFreeBytes + DiskCheckIntervalBytes)
+                    throw new TraceStorageException("磁盘剩余空间不足，已停止写入分析逐笔证据；原始采集文件未受影响。");
+                _nextDiskCheckBytes = _bytes + DiskCheckIntervalBytes;
+            }
             if (_file == null || _partBytes + bytes.Length + 1 > 128L * 1024 * 1024)
             {
                 if (_file != null) await _file.DisposeAsync();

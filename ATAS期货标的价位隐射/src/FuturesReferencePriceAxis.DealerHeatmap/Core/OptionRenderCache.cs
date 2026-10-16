@@ -1,7 +1,11 @@
 namespace WolfMoss.ATAS.PriceMapping.Core;
 
 public readonly record struct OptionRenderRow(OptionStrikeRow Row, decimal Lower, decimal Upper,
-    string CallLabel, string PutLabel);
+    string CallLabel, string PutLabel)
+{
+    public System.Drawing.Color CallStrengthColor { get; init; }
+    public System.Drawing.Color PutStrengthColor { get; init; }
+}
 public sealed record OptionRenderFrame(OptionRenderRow[] Rows, decimal[] Strikes, decimal Maximum);
 
 // Per-column, render-thread-owned, one-entry cache. No pixel coordinates are cached:
@@ -34,7 +38,11 @@ public sealed class OptionRenderCache
                 : oi ? OptionPresentation.UnknownDataMarker : OptionPresentation.GetFlowMissingMarker(status, row.CallFlowCoverage);
             var putText = put.HasValue ? OptionPresentation.FormatFlowValue(put.Value, !oi && row.PutFlowIsPartial)
                 : oi ? OptionPresentation.UnknownDataMarker : OptionPresentation.GetFlowMissingMarker(status, row.PutFlowCoverage);
-            rendered[i] = new(row, bounds.Lower, bounds.Upper, callText, putText);
+            rendered[i] = new(row, bounds.Lower, bounds.Upper, callText, putText)
+            {
+                CallStrengthColor = OptionStrengthPresentation.Color(row.CallBuyStrength, true),
+                PutStrengthColor = OptionStrengthPresentation.Color(row.PutBuyStrength, false)
+            };
         }
         _source = source; _oi = oi; _status = status; BuildCount++;
         return _frame = new(rendered, strikes, maximum);

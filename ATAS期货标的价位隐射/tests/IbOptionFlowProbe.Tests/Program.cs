@@ -5,6 +5,9 @@ using IbOptionFlowProbe.Tests;
 using WolfMoss.ATAS.PriceMapping;
 using WolfMoss.ATAS.PriceMapping.Core;
 
+if (args.Length > 0 && args[0] == "--buy-strength-replay") { BuyStrengthTests.Unit(); BuyStrengthTests.Replay(args[1]); return 0; }
+if (args.Length > 0 && args[0] == "--buy-strength-unit") { BuyStrengthTests.Unit(); return 0; }
+
 var root = Path.Combine(Path.GetTempPath(), "ib-flow-probe-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var passed = 0;
@@ -20,6 +23,7 @@ async Task Test(string name, Func<Task> run)
 }
 try
 {
+    await Test("buy strength classification, filter, lifetime and allocations", () => { BuyStrengthTests.Unit(); return Task.CompletedTask; });
     await Test("embedded official API without ATAS or socket", async () =>
     {
         await using var client = new ReflectionIbOptionGatewayClient(new("127.0.0.1", 4001, 2290));
@@ -233,6 +237,7 @@ try
     });
     await DirectionMetricsTests.RunAsync(Test);
     await DirectionAnalysisTests.RunAsync(Test);
+    await QuoteWaitTests.RunAsync(Test);
     await DirectionHtmlTests.RunAsync(Test);
     await AnalysisTests.RunAsync(Test, root);
 }

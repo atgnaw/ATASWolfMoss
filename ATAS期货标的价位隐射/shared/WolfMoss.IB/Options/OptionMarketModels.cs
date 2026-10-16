@@ -143,7 +143,11 @@ public readonly record struct OptionStrikeRow(
     bool CallFlowRetained = false,
     bool PutFlowRetained = false,
     decimal? FlowLowerBoundUsd = null,
-    decimal? FlowUpperBoundUsd = null);
+    decimal? FlowUpperBoundUsd = null)
+{
+    public OptionBuyStrength? CallBuyStrength { get; init; }
+    public OptionBuyStrength? PutBuyStrength { get; init; }
+}
 
 public sealed record OptionOpenInterestSnapshot(
     string? Ticker,

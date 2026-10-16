@@ -50,7 +50,7 @@ async function handle(message, sender) {
       if (!UwCore.dateLabelMatches(page.dateLabel, config.date)) throw Error(`页面显示 ${page.dateLabel}，与输入日期不一致`);
       if (!page.rows.length) throw Error('页面没有合约行，请检查登录、筛选与加载状态');
       const id = crypto.randomUUID();
-      const run = { id, version: '0.1.4', tabId: tab.id, documentId: inspected.documentId, url: page.url, dateLabel: page.dateLabel,
+      const run = { id, version: '0.1.5', tabId: tab.id, documentId: inspected.documentId, url: page.url, dateLabel: page.dateLabel,
         headers: page.headers, config, status: 'RUNNING', startedUtc: now(), sequence: 0, uniqueRows: 0, bytes: 0, polls: 0,
         gaps: 0, maxGapMs: 0, emptyPolls: 0, lastMessage: '启动中' };
       await UwStore.put(run);

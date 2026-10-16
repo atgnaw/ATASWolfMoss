@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="BuyStrengthIntegrationTests.cs" />
     <Compile Include="FutureBufferTests.cs" />
     <Compile Include="StatusUiTests.cs" />
     <Compile Include="StabilityBatchOneTests.cs" />

@@ -62,15 +62,17 @@ internal static class DirectionHtmlTests
                 && html.Contains("value=\"Consensus\" selected", StringComparison.Ordinal)
                 && html.Contains("value=\"RegularTrades\" selected", StringComparison.Ordinal)
                 && html.Contains("value=\"1\" selected", StringComparison.Ordinal), "Defaults must select primary one-minute regular trades");
-            foreach (var method in new[] { "AtQuote", "Midpoint", "MidpointTick" })
+            foreach (var method in new[] { "AtQuote", "Midpoint" })
                 Check(html.Contains("value=\"" + method + "\"", StringComparison.Ordinal), "Missing method " + method);
             Check(!html.Contains("value=\"Primary\"", StringComparison.Ordinal), "Consensus must not masquerade as a fourth classifier");
+            foreach (var removed in new[] { "MidpointTick", "Source", "Envelope" })
+                Check(!html.Contains("value=\"" + removed + "\"", StringComparison.Ordinal), "Removed report option remains: " + removed);
             foreach (var key in new[] { "tendency", "coverage", "bounds", "timing", "unknown", "tolerance" })
                 Check(html.Contains("data-help=\"" + key + "\""), "Missing term explanation " + key);
             Check(html.Contains("value=\"0\"", StringComparison.Ordinal) && html.Contains("const pageSize = 50;", StringComparison.Ordinal),
                 "Summary rows must be separate and DOM pagination limited to 50 buckets");
             using var data = Data(html);
-            Check(data.RootElement.GetProperty("settings").GetProperty("scenarios").GetArrayLength() == 36,
+            Check(data.RootElement.GetProperty("settings").GetProperty("scenarios").GetArrayLength() == 51,
                 "All 36 raw scenario settings must remain available");
             return Task.CompletedTask;
         });
@@ -98,7 +100,7 @@ internal static class DirectionHtmlTests
                 && row.GetProperty("highestPassedPressure").ValueKind == JsonValueKind.Null
                 && row.GetProperty("primary").GetProperty("metrics").GetProperty("tendency").ValueKind == JsonValueKind.Null,
                 "Missing data and ineligible pressure claims must remain null");
-            foreach (var text in new[] { "不是概率", "抗误判余量", "MIDPOINT_TICK", "decisions-*.jsonl", "原始序号", "Δ" })
+            foreach (var text in new[] { "不是概率", "抗误判余量", "decisions-*.jsonl", "原始序号" })
                 Check(html.Contains(text, StringComparison.Ordinal), "Missing evidence explanation " + text);
             Check(!html.Contains("NaN", StringComparison.Ordinal) && !html.Contains("fetch(", StringComparison.Ordinal)
                 && !html.Contains("XMLHttpRequest", StringComparison.Ordinal) && !html.Contains("<script src", StringComparison.Ordinal)

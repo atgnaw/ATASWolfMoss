@@ -7,8 +7,8 @@
     <label>成交口径 <button class="help" type="button" data-help="scope" aria-label="解释成交口径">?</button><select id="robust-scope"><option value="RegularTrades" selected>常规成交</option><option value="AllTimeAndSales">全部成交回报</option></select></label>
     <label>统计周期<select id="robust-interval"><option value="1" selected>1 分钟</option><option value="3">3 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option><option value="0">整段汇总</option></select></label>
     <label>时间桶<select id="robust-bucket"></select></label>
-    <label>分类方法 <button class="help" type="button" data-help="method" aria-label="解释分类方法">?</button><select id="robust-method"><option value="AtQuote">仅贴买卖价</option><option value="Midpoint" selected>中间价法</option><option value="MidpointTick">中间价＋逐笔涨跌</option></select></label>
-    <label>时间对齐 <button class="help" type="button" data-help="alignment" aria-label="解释时间对齐">?</button><select id="robust-alignment"><option value="Consensus" selected>多时间候选一致</option><option value="Latest">接收时最新报价</option><option value="Source">源时间附近的报价</option></select></label>
+    <label>分类方法 <button class="help" type="button" data-help="method" aria-label="解释分类方法">?</button><select id="robust-method"><option value="AtQuote">仅贴买卖价</option><option value="Midpoint" selected>中间价法</option></select></label>
+    <label>时间对齐 <button class="help" type="button" data-help="alignment" aria-label="解释时间对齐">?</button><select id="robust-alignment"><option value="Consensus" selected>多时间候选一致</option><option value="Latest">接收时最新报价</option><option value="Conditional">条件式大单对齐（50毫秒）</option></select></label>
     <label id="robust-parameter-label">对齐参数<select id="robust-scenario"></select></label>
     <label>显示时区<select id="robust-zone"><option value="America/New_York" selected>纽约交易时间</option><option value="Asia/Singapore">北京时间 / 新加坡</option><option value="UTC">世界标准时间</option></select></label>
   </div>

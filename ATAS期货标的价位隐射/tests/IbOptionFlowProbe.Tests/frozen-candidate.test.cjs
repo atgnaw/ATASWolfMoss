@@ -1,0 +1,27 @@
+'use strict';
+const fs=require('node:fs'),crypto=require('node:crypto'),assert=require('node:assert/strict');
+const V=require('../../tools/IbOptionFlowProbe/ValidateFrozenCandidate.cjs');
+const dir=process.argv[2]||'docs/reports/uw-ib-20261001',bytes=fs.readFileSync(dir+'/comparison.html'),d=V.payload(bytes.toString('utf8'));
+const specBytes=fs.readFileSync('docs/reports/uw-ib-crossday/filter-candidate.json'),spec=JSON.parse(specBytes),result=V.evaluate(d,spec),saved=JSON.parse(fs.readFileSync(dir+'/frozen-validation.json'));
+const near=(a,b)=>assert.ok(Math.abs(a-b)<1e-12,`${a} != ${b}`),sum=a=>a.reduce((s,v)=>s+v,0),hash=b=>crypto.createHash('sha256').update(b).digest('hex');
+assert.equal(result.date,'2026-10-01');assert.equal(result.window.startLabel,'13:50');assert.equal(result.window.endLabel,'14:15');assert.equal(result.window.excludedFinalLabel,'14:20–14:25');
+assert.equal(result.rows.length,99);assert.deepEqual(result.excluded,{invalidBucket:0,finalUwBucket:55,invalidCounts:1,requestedEnd:0,outsideWindow:221,unsubscribed:259});
+assert.equal(result.all.after.n,69);assert.equal(result.all.before.bad10,9);assert.equal(result.all.after.bad10,2);assert.equal(result.all.removedNotBad,23);
+assert.equal(sum(result.rows.map(r=>sum(r.ib))),363513);assert.equal(sum(result.rows.map(r=>r.uwVolume)),364463);
+const expected=sum(result.rows.map(r=>r.uwVolume*Math.abs(r.ib[0]/(r.ib[0]+r.ib[1])-r.uw[0]/(r.uw[0]+r.uw[1]))))/sum(result.rows.map(r=>r.uwVolume));near(result.all.before.mean,expected);
+near(result.all.after.max,result.all.before.max);assert.deepEqual(result.all,saved.all);
+assert.equal(saved.provenance.specSha256,hash(specBytes));assert.equal(saved.provenance.comparisonSha256,hash(bytes));assert.equal(saved.source.uwSha256,hash(fs.readFileSync(saved.source.uwFile)));
+assert.deepEqual(fs.readFileSync(dir+'/frozen-candidate.json'),specBytes);
+const permuted=structuredClone(d);for(const p of permuted.pairs)[p.uw[0],p.uw[1]]=[p.uw[1],p.uw[0]];
+assert.deepEqual(V.evaluate(permuted,spec).rows.map(r=>r.decision),result.rows.map(r=>r.decision));
+const old=structuredClone(d);old.result.windowDetails.date='2026-09-29';assert.throws(()=>V.evaluate(old,spec),/after the research/);
+const final=structuredClone(d);final.pairs[0].t=final.result.windowDetails.finalStart;assert.throws(()=>V.evaluate(final,spec),/final UW bucket/);
+const uw=JSON.parse(fs.readFileSync(saved.source.uwFile));for(const p of d.pairs){const x=uw.latest.find(x=>x.identity.ticker===(p.ticker==='SPX'?'SPXW':p.ticker)&&Number(x.identity.strike)===p.strike&&x.identity.expiry===p.expiry&&x.identity.right.toUpperCase()===p.right.toUpperCase()&&Date.parse(x.bucket.startUtc)===p.t);assert.ok(x);assert.equal(x.ba.status,'RECONSTRUCTED');assert.deepEqual(p.uw,[x.ba.counts.ask,x.ba.counts.bid,x.ba.counts.neutral,0]);}
+const {JSDOM,VirtualConsole}=require('../../tools/UwPageCollector/node_modules/jsdom'),errors=[],vc=new VirtualConsole();vc.on('jsdomError',e=>errors.push(e.message));
+const dom=new JSDOM(fs.readFileSync(dir+'/frozen-validation.html','utf8'),{runScripts:'dangerously',virtualConsole:vc}),doc=dom.window.document,get=id=>doc.getElementById(id);
+assert.equal(get('rows').children.length,99);const select=(id,v)=>{get(id).value=v;get(id).dispatchEvent(new dom.window.Event('change'));};
+select('state','kept');assert.equal(get('rows').children.length,69);select('state','removed');assert.equal(get('rows').children.length,30);
+select('state','missed');assert.equal(get('rows').children.length,2);assert.match(get('rows').textContent,/7690/);assert.match(get('rows').textContent,/7680/);
+select('ticker','QQQ');assert.equal(get('rows').children.length,0);select('state','kept');assert.equal(get('rows').children.length,34);
+select('ticker','SPX');assert.equal(get('rows').children.length,35);assert.equal(doc.querySelectorAll('input[type=number]').length,0);assert.deepEqual(errors,[]);dom.window.close();
+console.log('PASS frozen October 1 validation: original spec hash, exclusions, raw UW counts, independent metrics, no label-driven filtering, missed buckets, delivered HTML');

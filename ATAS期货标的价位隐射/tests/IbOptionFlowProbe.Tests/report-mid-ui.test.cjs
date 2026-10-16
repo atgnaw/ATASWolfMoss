@@ -15,6 +15,7 @@ get('data').textContent=payload;
 for(const script of doc.querySelectorAll('script[type="text/javascript"]'))dom.window.eval(script.textContent);
 const data=JSON.parse(get('data').textContent);
 assert.ok(data.outside);
+assert.equal(data.settings.waitRule,'MIN_BID_MAX_ASK_FIRST_PRICE_CHANGE');
 assert.equal(get('outside').checked,false);
 assert.equal(get('outside').disabled,false);
 assert.ok(!data.reasons.some(r=>['U11','U17'].includes(r.code)));
@@ -29,6 +30,11 @@ for(let i=0;i<data.buckets.length;i++){
    assert.ok(Math.abs(v.buy+v.sell+v.mid+v.unknown-v.metrics.total)<.01);
    assert.equal(v.unknownPremiums.LOCKED_QUOTE,undefined);
    assert.equal(v.unknownPremiums.MIDPOINT_UNKNOWN,undefined);
+   if(key.startsWith('Envelope/')){
+    assert.equal(v.unknownPremiums.MID_DIRECTION_DISAGREEMENT,undefined);
+    assert.equal(v.unknownPremiums.DIRECTION_CONFLICT,undefined);
+    assert.equal(v.unknownPremiums.UNRESOLVED_CANDIDATE,undefined);
+   }
   }
   assert.ok(Math.abs(a.metrics.total-b.metrics.total)<.01);
   midTotal+=a.mid;
@@ -48,6 +54,13 @@ assert.equal(get('summary').textContent,before);
 get('outside').checked=true;get('outside').dispatchEvent(new dom.window.Event('change'));
 get('preset').click();assert.equal(get('outside').checked,false);
 assert.equal(get('alignment').value,'Consensus');
+assert.deepEqual(Array.from(get('method').options,o=>o.value),['AtQuote','Midpoint']);
+assert.deepEqual(Array.from(get('alignment').options,o=>o.value),['Consensus','Latest','Conditional']);
+for(const method of ['AtQuote','Midpoint']){
+ select('method',method);
+ select('alignment','Conditional');assert.equal(get('scenario').options.length,1);assert.equal(get('scenario').value,`Conditional/${method}/50`);assert.match(get('summary').textContent,/大单成交量占比/);
+ select('alignment','Latest');assert.equal(get('scenario').options.length,7);
+}
 assert.deepEqual(errors,[]);
 console.log('PASS: real report Mid accounting, U15 toggle, restore, total conservation, no script errors; changed scenarios='+changes);
 dom.window.close();

@@ -2,7 +2,33 @@ using WolfMoss.ATAS.PriceMapping.Core;
 
 namespace IbOptionFlowProbe;
 
-internal sealed record DirectionScenario(string Id, string Method, int? OffsetMs, int MaximumAgeMs);
+internal sealed record DirectionScenario(string Id, string Method, int? OffsetMs, int MaximumAgeMs, int? WaitMs = null, bool Conditional = false);
+internal sealed record LargeTradeSettings(int QqqContracts = 100, int SpxContracts = 50)
+{
+    public static LargeTradeSettings Parse(string[] args)
+    {
+        var result = new LargeTradeSettings();
+        var seen = new HashSet<string>();
+        for (var i = 0; i < args.Length; i += 2)
+        {
+            if (i + 1 >= args.Length || !seen.Add(args[i]) || !int.TryParse(args[i + 1], out var value))
+                throw new ArgumentException("大单阈值参数缺失、重复或不是整数。");
+            result = args[i] switch
+            {
+                "--large-qqq" => result with { QqqContracts = value },
+                "--large-spx" => result with { SpxContracts = value },
+                _ => throw new ArgumentException("未知分析参数：" + args[i])
+            };
+        }
+        result.Validate(); return result;
+    }
+    public int Threshold(string ticker) => ticker == "SPX" ? SpxContracts : QqqContracts;
+    public void Validate()
+    {
+        if (QqqContracts is < 1 or > 1000000 || SpxContracts is < 1 or > 1000000)
+            throw new ArgumentException("大单张数阈值必须是 1 至 1000000 的整数。");
+    }
+}
 internal sealed record DirectionSettings
 {
     public int HistorySeconds { get; init; } = 60;
@@ -13,12 +39,19 @@ internal sealed record DirectionSettings
     public int MinimumEvents { get; init; } = 30;
     public decimal[] ErrorPressureFractions { get; init; } = [.01m, .02m, .05m];
     public int[] SourceOffsetsMs { get; init; } = [-250, -100, 0, 100, 250];
+    public static readonly int[] WaitThresholds = [50, 100, 200, 400];
+    public int[] WaitMilliseconds { get; init; } = WaitThresholds;
+    public string WaitRule { get; init; } = "MIN_BID_MAX_ASK_FIRST_PRICE_CHANGE";
+    public LargeTradeSettings LargeTrades { get; init; } = new();
+    public string ConditionalRule { get; init; } = "SIZE_GATE_50MS_FIRST_INVALID_PRE_ONLY";
     public DirectionScenario[] Scenarios { get; init; } = Build();
     private static DirectionScenario[] Build()
     {
         var methods = new[] { "AtQuote", "Midpoint", "MidpointTick" };
         return methods.SelectMany(m => QuoteAgeThresholds.Values.Select(age => new DirectionScenario($"Latest/{m}/{age}", m, null, age)))
-            .Concat(new[] { -250, -100, 0, 100, 250 }.SelectMany(offset => methods.Select(m => new DirectionScenario($"Source{offset:+0;-0;0}/{m}", m, offset, -1)))).ToArray();
+            .Concat(new[] { -250, -100, 0, 100, 250 }.SelectMany(offset => methods.Select(m => new DirectionScenario($"Source{offset:+0;-0;0}/{m}", m, offset, -1))))
+            .Concat(WaitThresholds.SelectMany(wait => methods.Select(m => new DirectionScenario($"Envelope/{m}/{wait}", m, null, -1, wait))))
+            .Concat(methods.Select(m => new DirectionScenario($"Conditional/{m}/50", m, null, -1, 50, true))).ToArray();
     }
 }
 internal sealed record AlignmentEvidence(string Id, DateTime TargetUtc, double TargetTicks, bool Feasible,
@@ -28,7 +61,25 @@ internal sealed record DirectionEvidence(long Sequence, string Disposition, int 
     int FeasibleSourceCandidates, int DistinctQuoteStates, int TickSign, AlignmentEvidence[] Alignments, DirectionMatch[] Matches)
 {
     public DirectionMatch[] Consensus { get; init; } = [];
+    // Only the new delayed experiment is completed later; original evidence never changes.
+    public List<DirectionMatch> WaitMatches { get; } = [];
+    public List<QuoteWaitDecision> WaitDecisions { get; } = [];
+    public AlignmentEvidence? ConditionalNextQuote { get; set; }
+    public AlignmentEvidence? ConditionalSimulatedQuote { get; set; }
+    public AlignmentEvidence? ConditionalFirstRejectedQuote { get; set; }
+    public int ConditionalSkippedQuotes { get; set; }
+    public SortedDictionary<string, int> ConditionalSkippedReasons { get; } = new(StringComparer.Ordinal);
+    public QuoteWaitDecision? ConditionalWaitDecision { get; set; }
+    public AlignmentEvidence? NextQuote { get; set; }
+    public AlignmentEvidence? SimulatedQuote { get; set; }
+    public int LargeTradeThreshold { get; set; }
+    public bool IsLargeTrade { get; set; }
+    public List<ConditionalMatch> ConditionalMatches { get; } = [];
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool Ready => Disposition != "ACCEPTED" || WaitDecisions.Count == DirectionSettings.WaitThresholds.Length && ConditionalMatches.Count == 3;
 }
+internal sealed record QuoteWaitDecision(int WaitMs, string Status, DateTime DecidedUtc);
+internal sealed record ConditionalMatch(string ScenarioId, string AlignmentId, int Sign, string Reason, string Branch, DateTime DecidedUtc);
 
 internal sealed class DirectionAmounts
 {
@@ -40,6 +91,9 @@ internal sealed class DirectionAmounts
     public SortedDictionary<string, decimal> Reasons { get; } = new(StringComparer.Ordinal);
     public SortedDictionary<string, decimal> UnknownPremiums { get; } = new(StringComparer.Ordinal);
     public SortedDictionary<string, long> UnknownCounts { get; } = new(StringComparer.Ordinal);
+    public SortedDictionary<string, decimal> WaitPremiums { get; } = new(StringComparer.Ordinal);
+    public SortedDictionary<string, long> WaitCounts { get; } = new(StringComparer.Ordinal);
+    public SortedDictionary<string, decimal> WaitVolumes { get; } = new(StringComparer.Ordinal);
     public DirectionMetrics Metrics => DirectionMetrics.Calculate(Buy, Sell, Unknown, Mid);
     public void AddUnresolved(decimal premium, string[] reasons, Func<UnknownTradeExample> example)
     {

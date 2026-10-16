@@ -14,14 +14,15 @@ internal readonly record struct IbGatewayConnectionOptions(
 internal readonly record struct IbOptionSubscriptionRequirements(
     bool OpenInterest,
     bool RegularTrades,
-    bool AllTimeAndSales)
+    bool AllTimeAndSales,
+    bool BuyStrength = false)
 {
     public string GenericTickList
         => string.Join(",", new[]
         {
             OpenInterest ? "101" : null,
             RegularTrades ? "375" : null,
-            AllTimeAndSales ? "233" : null
+            AllTimeAndSales || BuyStrength ? "233" : null
         }.Where(static value => value != null));
 
     public IbOptionSubscriptionRequirements Union(
@@ -29,7 +30,8 @@ internal readonly record struct IbOptionSubscriptionRequirements(
         => new(
             OpenInterest || other.OpenInterest,
             RegularTrades || other.RegularTrades,
-            AllTimeAndSales || other.AllTimeAndSales);
+            AllTimeAndSales || other.AllTimeAndSales,
+            BuyStrength || other.BuyStrength);
 }
 
 internal readonly record struct IbOptionMarketDataUpdate(
@@ -59,6 +61,11 @@ internal interface IIbOptionSubscriptionLease : IDisposable
 
 internal interface IIbOptionGatewayClient : IAsyncDisposable
 {
+    void ConfigureBuyStrengthCalendar(Func<OptionContractDescriptor, OptionBuyStrengthCalendar> calendar) { }
+    OptionBuyStrength ReadBuyStrength(long conId, DateTime start, DateTime end, DateTime now)
+        => OptionBuyStrength.Missing;
+    OptionBuyStrength ReadBuyStrength(string ticker, DateOnly expiry, decimal strike, OptionRight right,
+        DateTime start, DateTime end, DateTime now) => OptionBuyStrength.Missing;
     IbPerformanceSnapshot? PerformanceSnapshot => null;
     bool IsAvailable { get; }
 

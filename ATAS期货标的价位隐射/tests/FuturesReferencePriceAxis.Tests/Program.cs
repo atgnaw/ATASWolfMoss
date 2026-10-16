@@ -63,6 +63,7 @@ if (args.Contains("--live-spx-marketwatch", StringComparer.OrdinalIgnoreCase))
 
 var tests = new (string Name, Action Run)[]
 {
+    ("Buy strength shared ingress, line budget, colors and settings", BuyStrengthIntegrationTests.Run),
     ("Future buffering eligibility, order and shared dedup", FutureBufferTests.EligibilityOrderAndDedup),
     ("Future buffering fixed/rolling buckets and sessions", FutureBufferTests.BucketsAndSessions),
     ("Future buffering retirement, reconnect, clock and limits", FutureBufferTests.BoundariesAndLimits),
@@ -1552,7 +1553,7 @@ static void TestEditionAssemblies()
         var standard = AssemblyLoadContext.Default.LoadFromAssemblyPath(standardPath);
         var pro = AssemblyLoadContext.Default.LoadFromAssemblyPath(proPath);
         Equal(new Version(1, 1, 0, 0), standard.GetName().Version!);
-        Equal(new Version(2, 3, 0, 0), pro.GetName().Version!);
+        Equal(new Version(2, 4, 2, 0), pro.GetName().Version!);
 
 #if !DEBUG
         var proDirectory = Path.GetDirectoryName(proPath)!;

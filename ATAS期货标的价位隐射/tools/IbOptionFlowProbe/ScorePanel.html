@@ -1,0 +1,26 @@
+<section id="score-panel">
+ <h2>桶评分实验 · 高分是否真的更接近 UW？</h2>
+ <p id="score-status" role="status"></p>
+ <div id="score-formula">
+ <p>前后均有效且分类一致：+1；模拟合并后分类与前报价不同：−1；合并后分类不变：0；普通成交、超时或无效回退、中断：0。一致包括同为中性，不代表主动方向已确认。</p>
+ <details><summary>评分公式与限制（点击展开）</summary>
+ <p>桶分数 = 100 ×（一致成交张数 − 合并改变分类成交张数）÷ 全桶已观察张数，范围 −100 至 +100。评分覆盖率 =（一致＋合并改变分类张数）÷全桶张数。没有大单的桶为基础0分，只检查最低分门槛，不受最低评分覆盖率和回调数限制；最低分大于0时仍会排除。大单全部在50毫秒等待超时后回退前报价，且分支记录完整时，记0分（仍检查覆盖率和回调数门槛，两者设0即可不限制）。其他无效回退、中断且无加减分依据的情况仍显示“大单无加减分依据”。合并但分类不变记0分，可与超时回退共同组成0分桶；仍检查覆盖率和回调数门槛。比较买、卖、中性、未知四类，买变中性也算改变。无成交或缺少分支数据不冒充基础0分。分数不使用 UW，不改变原分类，也不加权放大买卖方向。</p>
+ <p>条件式大单及最新报价各年龄档位均支持评分，使用当前成交口径、方法和U15。最新报价的大单辅助检查等待50毫秒，前报价在成交到达时、后报价及模拟报价在各自证据时间检查两侧年龄；过龄或当前分类未知不借无年龄上限结果获得评分。辅助检查不改变原分类。其他对齐方式暂不支持评分。无年龄上限最新报价另作同桶误差参考。前后段按本次完整桶范围划分，仅用于探索性对照，不是未见样本验证。门槛固定默认值用于试验，不是自动选出的最优参数。</p>
+ </details>
+ </div>
+ <div class="score-controls">
+  <label>观察区间<select id="score-phase"><option value="all">全部采集区间</option><option value="train">前段（探索）</option><option value="test">后段（对照）</option></select></label>
+  <label><input type="checkbox" id="score-enable">启用评分过滤（默认关闭）</label>
+  <label>最低分<input id="score-min" type="number" min="-100" max="100" value="0" step="1"></label>
+  <label>有大单时：最低评分覆盖率 %<input id="score-cover" type="number" min="0" max="100" value="10" step="1"></label>
+  <label title="0表示不限制加减分回调数量；最低分和覆盖率仍有效，无评分依据不会自动变成0分。">有大单时：至少加减分回调数<input id="score-events" type="number" min="0" max="1000000" value="3" step="1"></label>
+  <button id="score-reset" type="button">恢复：不过滤</button>
+ </div>
+ <p id="score-error" role="alert"></p><p id="score-retention"></p>
+ <div id="score-analysis">
+ <div class="score-scroll"><table><thead><tr><th>同一批桶对照</th><th>桶数</th><th>四类距离</th><th>仅买卖距离</th><th>净方向误差</th><th>四类最大 / P95</th><th>IB买卖覆盖</th></tr></thead><tbody id="score-results"></tbody></table></div>
+ <h3>固定分组检验（不受评分门槛过滤，受品种和区间选择影响）</h3>
+ <div class="score-scroll"><table><thead><tr><th>分数组</th><th>桶数</th><th>UW成交量</th><th>当前规则四类距离</th><th>最新报价四类距离</th><th>当前规则仅买卖距离</th><th>当前规则净误差</th></tr></thead><tbody id="score-groups"></tbody></table></div>
+ <p class="warning">评分用于对影响较大的大单提出更高要求：一致加分，合并改变分类才减分，无大单保持基础0分。高分可能更可靠、低分可能更不可靠，这是待验证假设，不是已证明的准确率。过滤效果须同时查看保留量、同桶基线和极端误差。</p>
+ </div>
+</section>

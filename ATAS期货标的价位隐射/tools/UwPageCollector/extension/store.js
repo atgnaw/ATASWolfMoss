@@ -82,7 +82,18 @@
       const latestPromise = request(tx.objectStore('latest').index('runId').getAll(id));
       const revisionsPromise = request(tx.objectStore('revisions').index('runId').getAll(id));
       const [run, latest, revisions] = await Promise.all([runPromise, latestPromise, revisionsPromise]);
-      return { schema: 'uw-page-collector/1', exportedUtc: new Date().toISOString(), run, latest, revisions,
+      const recalculate = record => {
+        if (!record.raw) return record;
+        const ba = root.UwCore.reconstruct(record.volume,
+          [record.raw.bidPercent, record.raw.neutralPercent, record.raw.askPercent]);
+        const changed = record.ba?.status !== ba.status || record.ba?.reason !== ba.reason
+          || JSON.stringify(record.ba?.counts) !== JSON.stringify(ba.counts);
+        return { ...record, ba, ...(changed ? { baAtCapture: record.ba } : {}) };
+      };
+      const updatedLatest = latest.map(recalculate), updatedRevisions = revisions.map(recalculate);
+      return { schema: 'uw-page-collector/1', analysisVersion: '0.1.5',
+        reanalyzedLatestRows: updatedLatest.filter(r => r.baAtCapture).length,
+        exportedUtc: new Date().toISOString(), run, latest: updatedLatest, revisions: updatedRevisions,
         limitations: ['Only currently rendered table rows; missing rows are not zero.', 'Counts reconstructed from CSS percentages, not an official API or direct tooltip.', 'Ended buckets can be revised; not guaranteed final.', 'Premium text is rounded; B/A counts are volume weighted.', 'Date and timezone are user-confirmed; browser polling gaps may occur.'] };
     });
   }

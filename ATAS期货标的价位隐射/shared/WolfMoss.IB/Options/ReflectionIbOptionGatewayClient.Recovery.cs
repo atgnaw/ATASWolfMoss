@@ -20,6 +20,17 @@ internal sealed partial class ReflectionIbOptionGatewayClient
                 - _subscriptionsByConId.Values.Count(s => s.RequestId != 0);
             foreach (var subscription in _subscriptionsByConId.Values)
             {
+                // Replace the existing line, using the same paced cancel-before-request path.
+                // Never infer realtime from ordinary price ticks, or retry permission failures.
+                if (subscription.RequestId != 0 && subscription.Consumers.Count > 0
+                    && subscription.Requirements.BuyStrength && subscription.Strength?.NeedsMarketTypeRefresh(now) == true
+                    && subscription.StrengthRecoveryAttempts < 3 && now >= subscription.StrengthRetryAfterUtc)
+                {
+                    subscription.StrengthRecoveryAttempts++;
+                    subscription.StrengthRetryAfterUtc = now.AddSeconds(30);
+                    (sends ??= new()).Add(StartOrReplaceSubscription(subscription, subscription.Requirements));
+                    continue;
+                }
                 if (subscription.RequestId != 0 || subscription.Consumers.Count == 0
                     || subscription.FailureCode is not (100 or 101) || subscription.RecoveryAttempts >= 3
                     || now < subscription.RetryAfterUtc || available <= 0) continue;
