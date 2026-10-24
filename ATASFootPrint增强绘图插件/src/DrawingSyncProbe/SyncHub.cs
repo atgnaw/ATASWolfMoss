@@ -6,12 +6,14 @@ internal interface ISyncBridge
     int ChartId { get; }
     int ThreadId { get; }
     object Core { get; }
+    bool SharesInstrumentSnapshot => false;
     void CheckReady();
     ChartSnapshot? Read();
     void Apply(Edit edit);
+    void VerifyWrites() { }
 }
 
-internal sealed class SyncHub(string? journalDirectory = null)
+internal sealed class SyncHub(string? journalDirectory = null, int intervalMilliseconds = 300, Func<long>? clock = null)
 {
     internal static SyncHub Shared { get; } = new();
     internal sealed record Endpoint(Guid Id, ISyncBridge Bridge, string Group, Func<bool> Active,
@@ -23,6 +25,7 @@ internal sealed class SyncHub(string? journalDirectory = null)
         public required PairJournal Journal;
         public required SyncEngine Engine;
         public string? Fault;
+        public long NextDue;
         public void Dispose() => Journal.Dispose();
     }
     private readonly object _gate = new();
@@ -60,7 +63,10 @@ internal sealed class SyncHub(string? journalDirectory = null)
     // Same native Global object appears in every chart. Merge IDs, never make a copy per chart.
     private static ChartSnapshot? ReadSide(Endpoint[] endpoints)
     {
-        var lines = new Dictionary<string, LineState>();
+        // ATAS Globals and all local IDs are shared by the native store. One representative
+        // reads the instrument once, regardless of how many chart periods display it.
+        if (endpoints.All(x => x.Bridge.SharesInstrumentSnapshot)) return endpoints[0].Bridge.Read();
+        var lines = new Dictionary<string, DrawingState>();
         var ids = new HashSet<string>();
         var localIds = new HashSet<string>();
         foreach (var endpoint in endpoints)
@@ -68,8 +74,8 @@ internal sealed class SyncHub(string? journalDirectory = null)
             var snapshot = endpoint.Bridge.Read();
             if (snapshot is null) return null;
             ids.UnionWith(snapshot.AllIds);
-            if (snapshot.LocalLineIds is { } locals) localIds.UnionWith(locals);
-            foreach (var (id, state) in snapshot.Lines)
+            if (snapshot.LocalObjectIds is { } locals) localIds.UnionWith(locals);
+            foreach (var (id, state) in snapshot.Objects)
             {
                 if (lines.TryGetValue(id, out var previous) && previous != state)
                     throw new InvalidOperationException("同一全局对象在不同图表中的状态不一致。");
@@ -84,7 +90,7 @@ internal sealed class SyncHub(string? journalDirectory = null)
     {
         lock (_gate)
         {
-            var now = Environment.TickCount64;
+            var now = clock?.Invoke() ?? Environment.TickCount64;
             foreach (var id in _entries.Where(x => !x.Value.Endpoint.Active() || now - x.Value.Heartbeat > 3000).Select(x => x.Key).ToArray())
                 RemoveLocked(id);
             if (_entries.TryGetValue(endpoint.Id, out var previous) && Key(previous.Endpoint) != Key(endpoint)) RemoveLocked(endpoint.Id);
@@ -130,14 +136,13 @@ internal sealed class SyncHub(string? journalDirectory = null)
             }
             if (charts.Any(x => x.Bridge.ThreadId != Environment.CurrentManagedThreadId))
             {
-                Pause("暂停：图表不在同一个 GUI 线程，验证版不支持");
+                Pause("暂停：图表不在同一个 GUI 线程，暂不支持");
                 return;
             }
             Session? session = null;
             try
             {
                 if (members.Any(x => !x.Active())) { Pause("等待图表重新连接"); return; }
-                foreach (var chart in charts) chart.Bridge.CheckReady();
                 if (_sessions.TryGetValue(key, out session) && !session.Members.SetEquals(members.Select(x => x.Id)))
                 {
                     DropSession(key);
@@ -160,6 +165,16 @@ internal sealed class SyncHub(string? journalDirectory = null)
                     foreach (var member in members) member.Status(session.Fault);
                     return;
                 }
+                if (now < session.NextDue) return;
+                session.NextDue = now + Math.Max(0, intervalMilliseconds);
+                try { foreach (var chart in charts) chart.Bridge.CheckReady(); }
+                catch (Exception ex)
+                {
+                    // Readiness gaps reset the baseline; offline absence is not deletion.
+                    Pause("等待图表就绪：" + ex.GetBaseException().Message);
+                    return;
+                }
+                using var readScope = new NativeReadScope();
                 var l = ReadSide(left);
                 var r = ReadSide(right);
                 if (l is null || r is null) return;
@@ -169,8 +184,8 @@ internal sealed class SyncHub(string? journalDirectory = null)
                     if (members.Any(x => !x.Active())) throw new InvalidOperationException("同步设置已变化。");
                     (edit.ToLeft ? left[0] : right[0]).Bridge.Apply(edit);
                     changed = true;
-                });
-                var status = $"同步中 组「{endpoint.Group}」 {left[0].Bridge.Instrument.Root} ↔ {right[0].Bridge.Instrument.Root} {left[0].Bridge.Instrument.PeriodLabel} | 配对 {session.Engine.PairCount} | 图表 {left.Length}+{right.Length} | 仅全局水平线";
+                }, () => { left[0].Bridge.VerifyWrites(); right[0].Bridge.VerifyWrites(); });
+                var status = $"同步中 组「{endpoint.Group}」 {left[0].Bridge.Instrument.Root} ↔ {right[0].Bridge.Instrument.Root} {left[0].Bridge.Instrument.PeriodLabel} | 配对 {session.Engine.PairCount} | 图表 {left.Length}+{right.Length} | 全局绘图";
                 if (session.Engine.WaitingPairs > 0) status += $" | 暂挂 {session.Engine.WaitingPairs}（配对另一侧未开启全局或对象未完成）";
                 if (session.Engine.ConflictCount > 0) status += $" | 同时编辑冲突 {session.Engine.ConflictCount}，大合约优先";
                 foreach (var member in members)
@@ -189,3 +204,5 @@ internal sealed class SyncHub(string? journalDirectory = null)
         }
     }
 }
+
+

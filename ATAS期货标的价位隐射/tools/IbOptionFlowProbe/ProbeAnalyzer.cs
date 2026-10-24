@@ -32,8 +32,10 @@ internal sealed class ProbeAnalyzer(long monotonicFrequency, DateTime observatio
     public long AcceptedTrades { get; private set; }
     public long Boundaries { get; private set; }
     private int _epoch;
-    public void Break(string reason)
+    private readonly FarmRecovery _recovery = new();
+    public void Break(string reason, bool preserveSubscription = false)
     {
+        if (!preserveSubscription) _recovery.Clear();
         _quotes.Clear(); _feeds.Clear(); Boundaries++; Count(reason);
     }
     private void Count(string name) => Diagnostics[name] = Diagnostics.GetValueOrDefault(name) + 1;
@@ -43,9 +45,12 @@ internal sealed class ProbeAnalyzer(long monotonicFrequency, DateTime observatio
         var raw = item.Raw;
         if (_epoch != 0 && _epoch != item.ConnectionEpoch) Break("CONNECTION_EPOCH");
         _epoch = item.ConnectionEpoch;
-        if (raw.Kind == "connectionClosed" || raw.ErrorCode is 1100 or 1101 or 1300 or 2103)
+        if (raw.ErrorCode == 2103) { _recovery.Disconnect(); Break("IB_2103", true); return null; }
+        if (raw.ErrorCode == 2104 && _recovery.Reconnect()) Break("FARM_RECOVERED_FRESH_QUOTES_REQUIRED", true);
+        if (raw.Kind == "connectionClosed" || raw.ErrorCode is 1100 or 1101 or 1300)
         { Break(raw.ErrorCode is { } e ? $"IB_{e}" : "DISCONNECT"); return null; }
         if (raw.ErrorCode.HasValue) Count($"IB_{raw.ErrorCode}");
+        var restored = _recovery.Observe(raw);
         if (raw.Contract is not { } contract) return NoContract(item);
         if (contract.ConId <= 0 || contract.Multiplier <= 0) { Count("INVALID_CONTRACT"); return NoContract(item); }
         if (!_quotes.TryGetValue(contract.ConId, out var quotes)) _quotes[contract.ConId] = quotes = new();
@@ -55,9 +60,10 @@ internal sealed class ProbeAnalyzer(long monotonicFrequency, DateTime observatio
             _feeds.Remove((contract.ConId, 48)); _feeds.Remove((contract.ConId, 77)); Count("SUBSCRIPTION_CHANGED");
         }
         quotes.RequestId = raw.RequestId;
+        if (restored) { quotes.DataType = 1; Count("REALTIME_SUBSCRIPTION_RESTORED"); }
         if (raw.Kind == "marketDataType")
         {
-            quotes.DataType = raw.MarketDataType ?? 0;
+            quotes.DataType = _recovery.Blocked ? 0 : raw.MarketDataType ?? 0;
             quotes.Bid = quotes.Ask = null; quotes.BidSize = quotes.AskSize = null;
             _feeds.Remove((contract.ConId, 48)); _feeds.Remove((contract.ConId, 77));
             return null;

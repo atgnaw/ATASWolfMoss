@@ -9,15 +9,25 @@ using OFT.Rendering.Tools;
 using WolfMoss.ATAS.FootprintOutline.Core;
 using MediaColor = System.Windows.Media.Color;
 
+public enum OutlineProportionMode
+{
+    [Display(Name = "自定义")]
+    Custom = 0,
+    [Display(Name = "可见区域")]
+    VisibleRegion = 1
+}
+
 [DisplayName("Footprint Outline / 成交量外轮廓")]
 [Category("WolfMoss")]
-[Description("为 Volume Profile 叠加闭合阶梯外轮廓。ATAS 必须使用自定义比例，并与指标中的数值一致。")]
+[Description("为 Volume Profile 叠加闭合阶梯外轮廓。比例模式和参数必须与 ATAS 一致，支持自定义和可见区域。")]
 public sealed class FootprintOutlineIndicator : Indicator
 {
     private sealed record Settings
     {
         public bool Enabled { get; init; } = true;
         public decimal Proportion { get; init; }
+        public OutlineProportionMode Mode { get; init; }
+        public int Percentile { get; init; } = 100;
         public Color Color { get; init; } = Color.FromArgb(255, 216, 222, 233);
         public int LineWidth { get; init; } = 1;
         public int Offset { get; init; }
@@ -33,6 +43,7 @@ public sealed class FootprintOutlineIndicator : Indicator
     private readonly record struct PenSettings(Color Color, int Width);
     private sealed record RenderedBar(long Revision, ProfileLayout Layout, Point[][] Paths);
     private readonly SnapshotStore _snapshots = new();
+    private readonly VisibleRegionScale _visibleScale = new();
     private readonly object _settingsGate = new();
     private readonly object _renderGate = new();
     private readonly Dictionary<int, RenderedBar> _geometry = new();
@@ -64,6 +75,23 @@ public sealed class FootprintOutlineIndicator : Indicator
 
     [Display(Name = "启用轮廓", GroupName = "轮廓", Order = 10)]
     public bool OutlineEnabled { get => ReadSettings().Enabled; set => Change(s => s with { Enabled = value }); }
+
+    [Display(Name = "比例模式", GroupName = "轮廓", Order = 15,
+        Description = "与 ATAS 的比例模式一致。Custom=自定义；VisibleRegion=可见区域。可见区域自动计算基准，无需填写自定义比例值。")]
+    public OutlineProportionMode ProportionMode
+    {
+        get => ReadSettings().Mode;
+        set => Change(s => s with { Mode = value == OutlineProportionMode.VisibleRegion ? value : OutlineProportionMode.Custom });
+    }
+
+    [Display(Name = "可见区域百分位（%）", GroupName = "轮廓", Order = 25,
+        Description = "仅可见区域模式使用。与 ATAS 的 Visible Region Percentile 一致；100 使用可见 K 线的最大价位成交量。不是颜色的 Upper Cut-Off。")]
+    [Range(1, 100)]
+    public int VisibleRegionPercentile
+    {
+        get => ReadSettings().Percentile;
+        set => Change(s => s with { Percentile = Math.Clamp(value, 1, 100) });
+    }
 
     [Display(Name = "自定义比例值", GroupName = "轮廓", Order = 20,
         Description = "必须与 ATAS Footprint → 比例 → 自定义比例中的数值相同。修改 ATAS 后请同步修改这里；0 表示未配置。")]
@@ -141,7 +169,7 @@ public sealed class FootprintOutlineIndicator : Indicator
     protected override void OnRecalculate()
     {
         _snapshots.Clear();
-        lock (_renderGate) { ClearGeometry(); _verticalViewport = null; }
+        lock (_renderGate) { ClearGeometry(); _visibleScale.Clear(); _visibleSnapshots.Clear(); _verticalViewport = null; }
         base.OnRecalculate();
     }
 
@@ -154,7 +182,7 @@ public sealed class FootprintOutlineIndicator : Indicator
     protected override void OnDataProviderChanged(IIndicatorDataProvider? oldDataProvider, IIndicatorDataProvider? newDataProvider)
     {
         _snapshots.Clear();
-        lock (_renderGate) { ClearGeometry(); _verticalViewport = null; }
+        lock (_renderGate) { ClearGeometry(); _visibleScale.Clear(); _visibleSnapshots.Clear(); _verticalViewport = null; }
         base.OnDataProviderChanged(oldDataProvider, newDataProvider);
     }
 
@@ -175,7 +203,7 @@ public sealed class FootprintOutlineIndicator : Indicator
         context.SetClip(region);
         try
         {
-            if (settings.Proportion <= 0)
+            if (settings.Mode == OutlineProportionMode.Custom && settings.Proportion <= 0)
             {
                 context.DrawString("Footprint Outline：请填写与 ATAS 相同的自定义比例值", chart.PriceAxisFont,
                     settings.Color, region.Left + 8, region.Top + 24);
@@ -188,11 +216,17 @@ public sealed class FootprintOutlineIndicator : Indicator
 
             var viewport = new VerticalViewport(container.Region.Top, container.Region.Height,
                 container.High, container.Low, container.Step, container.PriceRowHeight);
-            var shapeSettings = new ShapeSettings(settings.Proportion, settings.Offset, settings.WidthPercent,
-                settings.DirectionMarker, settings.MarkerWidth);
             var penSettings = new PenSettings(settings.Color, settings.LineWidth);
             lock (_renderGate)
             {
+                _snapshots.CopyVisible(first, last, _visibleSnapshots);
+                var proportion = settings.Proportion;
+                if (settings.Mode == OutlineProportionMode.VisibleRegion
+                    && !_visibleScale.TryGetValue(_visibleSnapshots, first, last, container.Step,
+                        settings.Percentile, out proportion))
+                    return;
+                var shapeSettings = new ShapeSettings(proportion, settings.Offset, settings.WidthPercent,
+                    settings.DirectionMarker, settings.MarkerWidth);
                 if (_verticalViewport != viewport || _shapeSettings != shapeSettings)
                 {
                     ClearGeometry();
@@ -214,7 +248,6 @@ public sealed class FootprintOutlineIndicator : Indicator
                     _penSettings = penSettings;
                     _pen = new RenderPen(settings.Color, settings.LineWidth);
                 }
-                _snapshots.CopyVisible(first, last, _visibleSnapshots);
                 foreach (var (bar, snapshot) in _visibleSnapshots)
                 {
                     if (snapshot.Step != container.Step)
@@ -224,7 +257,7 @@ public sealed class FootprintOutlineIndicator : Indicator
                     if (!_geometry.TryGetValue(bar, out var cached) || cached.Revision != snapshot.Revision || cached.Layout != profileLayout)
                     {
                         var rectangles = ProfileGeometry.GetRectangles(snapshot.Levels, snapshot.Step,
-                            container.PriceRowHeight, profileLayout, settings.Proportion,
+                            container.PriceRowHeight, profileLayout, proportion,
                             price => container.GetYByPrice(price, true));
                         cached = new(snapshot.Revision, profileLayout, ProfileGeometry.TraceOutline(rectangles));
                         _geometry[bar] = cached;
@@ -241,7 +274,7 @@ public sealed class FootprintOutlineIndicator : Indicator
     {
         Interlocked.Exchange(ref _disposed, 1);
         _snapshots.Clear();
-        lock (_renderGate) { ClearGeometry(); _visibleSnapshots.Clear(); _pen = null; }
+        lock (_renderGate) { ClearGeometry(); _visibleScale.Clear(); _visibleSnapshots.Clear(); _pen = null; }
         base.OnDispose();
     }
 

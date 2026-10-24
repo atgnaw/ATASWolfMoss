@@ -11,6 +11,7 @@
     <Compile Include="../../src/DrawingSyncProbe/SyncEngine.cs" Link="SyncEngine.cs" />
     <Compile Include="../../src/DrawingSyncProbe/PairJournal.cs" Link="PairJournal.cs" />
     <Compile Include="../../src/DrawingSyncProbe/NativeBridge.cs" Link="NativeBridge.cs" />
+    <Compile Include="../../src/DrawingSyncProbe/DrawingAdapters.cs" Link="DrawingAdapters.cs" />
     <Compile Include="../../src/DrawingSyncProbe/SyncHub.cs" Link="SyncHub.cs" />
   </ItemGroup>
 </Project>

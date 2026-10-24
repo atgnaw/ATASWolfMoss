@@ -1,6 +1,17 @@
 namespace WolfMoss.ATAS.FootprintOutline.Core;
 
-internal sealed record BarSnapshot(long Revision, decimal Step, PriceLevel[] Levels);
+internal sealed record BarSnapshot(long Revision, decimal Step, PriceLevel[] Levels)
+{
+    public decimal MaximumVolume { get; } = FindMaximum(Levels);
+
+    private static decimal FindMaximum(PriceLevel[] levels)
+    {
+        var maximum = 0m;
+        foreach (var level in levels)
+            maximum = Math.Max(maximum, level.Volume);
+        return maximum;
+    }
+}
 
 /// <summary>Copies numeric values; never retains mutable ATAS PriceVolumeInfo objects.</summary>
 internal sealed class SnapshotStore

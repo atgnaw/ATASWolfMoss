@@ -32,9 +32,11 @@ internal sealed class DirectionAnalyzer(long frequency, DateTime start, DateTime
     private IbRawMarketEvent? _lastRaw;
     private int _epoch, _peak;
     private long _evictions;
+    private readonly FarmRecovery _recovery = new();
     private void Count(string reason) => _diagnostics[reason] = _diagnostics.GetValueOrDefault(reason) + 1;
-    public void Break(string reason, DateTime? time = null)
+    public void Break(string reason, DateTime? time = null, bool preserveSubscription = false)
     {
+        if (!preserveSubscription) _recovery.Clear();
         _waiting.Break(time ?? _lastRaw?.ReceivedUtc ?? start);
         _conditionalWaiting.Break(time ?? _lastRaw?.ReceivedUtc ?? start);
         foreach (var state in _states.Values) Remember(state);
@@ -70,13 +72,17 @@ internal sealed class DirectionAnalyzer(long frequency, DateTime start, DateTime
         _lastRaw = raw;
         if (_epoch != 0 && _epoch != item.ConnectionEpoch) Break("CONNECTION_EPOCH", raw.ReceivedUtc);
         _epoch = item.ConnectionEpoch;
-        if (raw.Kind == "connectionClosed" || raw.ErrorCode is 1100 or 1101 or 1300 or 2103)
+        if (raw.ErrorCode == 2103) { _recovery.Disconnect(); Break("OBSERVATION_GAP", raw.ReceivedUtc, true); return null; }
+        if (raw.ErrorCode == 2104 && _recovery.Reconnect()) Break("FARM_RECOVERED_FRESH_QUOTES_REQUIRED", raw.ReceivedUtc, true);
+        if (raw.Kind == "connectionClosed" || raw.ErrorCode is 1100 or 1101 or 1300)
         {
             if (cleanup && raw.Kind == "connectionClosed") { _waiting.Advance(raw.MonotonicTicks); _conditionalWaiting.Advance(raw.MonotonicTicks); _waiting.Break(raw.ReceivedUtc); _conditionalWaiting.Break(raw.ReceivedUtc); Count("CLEANUP_DISCONNECT"); }
             else Break("OBSERVATION_GAP", raw.ReceivedUtc);
             return null;
         }
         _waiting.Advance(raw.MonotonicTicks); _conditionalWaiting.Advance(raw.MonotonicTicks);
+        var restored = _recovery.Observe(raw);
+        if (_recovery.Blocked && raw.Kind == "marketDataType") raw = raw with { MarketDataType = 0 };
         if (raw.Contract is not { } c || c.ConId <= 0) return null;
         if (raw.Kind is not ("tickPrice" or "tickSize" or "tickString" or "marketDataType")) return null;
         if (!_states.TryGetValue(c.ConId, out var state)) _states[c.ConId] = state = new(frequency);
@@ -92,6 +98,11 @@ internal sealed class DirectionAnalyzer(long frequency, DateTime start, DateTime
         }
         if (raw.Kind is "tickPrice" or "tickSize" or "marketDataType")
         {
+            if (restored)
+            {
+                state.History.Add(raw with { Kind = "marketDataType", MarketDataType = 1 });
+                Count("REALTIME_SUBSCRIPTION_RESTORED");
+            }
             var previous = state.History.Latest;
             state.History.Add(raw);
             var next = state.History.Latest;

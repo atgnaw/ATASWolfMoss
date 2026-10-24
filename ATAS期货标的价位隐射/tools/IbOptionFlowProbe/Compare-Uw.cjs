@@ -17,7 +17,7 @@ const reportFd=fs.openSync(path.join(analysis,'report.json'),'r'),headerBuffer=B
 let headerText;try{headerText=headerBuffer.subarray(0,fs.readSync(reportFd,headerBuffer,0,headerBuffer.length,0)).toString('utf8');}finally{fs.closeSync(reportFd);}
 const headerEnd=headerText.indexOf('"totals":');assert.ok(headerEnd>0,'Missing finalized analysis metadata');
 const analysisMetadata=JSON.parse(headerText.slice(0,headerEnd).replace(/,\s*$/,'')+'}');
-assert.equal(analysisMetadata.run_id,summary.run_id);assert.equal(analysisMetadata.algorithm_version,'0.9.2','Use the same 0.9.2 analysis rules');
+assert.equal(analysisMetadata.run_id,summary.run_id);assert.ok(['0.9.2','0.9.3'].includes(analysisMetadata.algorithm_version),'Unsupported analysis version');
 const byId=new Map(contracts.map(c=>[c.con_id,c]));
 const identity=(ticker,expiry,strike,right)=>[ticker==='SPXW'?'SPX':ticker,expiry,Number(strike),right.toUpperCase()].join('|');
 const contractKeys=new Map(contracts.map(c=>[identity(c.ticker,c.expiration,c.strike_usd,c.right),c.con_id]));

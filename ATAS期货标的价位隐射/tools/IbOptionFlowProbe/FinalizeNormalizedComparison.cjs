@@ -1,0 +1,11 @@
+'use strict';
+const fs=require('node:fs'),assert=require('node:assert/strict'),crypto=require('node:crypto'),V=require('./ValidateFrozenCandidate.cjs');
+const dir=process.argv[2],file=dir+'/comparison.html',d=V.payload(fs.readFileSync(file,'utf8')),u=JSON.parse(fs.readFileSync(d.result.uwFile)),n=u.timeNormalization;
+assert.ok(n);const original=fs.readFileSync(n.originalFile);assert.equal(crypto.createHash('sha256').update(original).digest('hex'),n.originalSha256);
+const o=JSON.parse(original);for(const name of ['latest','revisions']){assert.equal(o[name].length,u[name].length);o[name].forEach((r,i)=>{const s=u[name][i];for(const k of ['raw','ba','identity','volume','capturedUtc','pageReadUtc'])assert.deepEqual(s[k],r[k]);assert.deepEqual(s.originalBucket,r.bucket);assert.equal(s.originalKey,r.key);assert.equal(Date.parse(s.bucket.startUtc),Date.parse(n.sourceCalendarDate+'T'+r.bucket.start+':00+08:00'));});}
+const banner='<section id="normalization-note" style="background:#fff2d9;padding:18px"><b>UW 时间转换说明</b><p>按用户确认：页面使用 UTC+8，日期为 '+n.sourceCalendarDate+'；转换到纽约交易日 '+n.tradingDate+'。原始文件不变，使用修正副本；原始页面文字、数量、买卖中性还原值和采集时刻均保留。已剔除最新桶 '+d.result.windowDetails.excludedFinalLabel+'，有效比较区间 '+d.result.windowDetails.startLabel+'–'+d.result.windowDetails.endLabel+'。没有重新调参。</p></section>';
+const qualityNote='<section id="uw-save-note" style="background:#fff2d9;padding:18px">UW 保存时点提示：'+(d.pairs.length-d.result.uwPostEndPairs)+' 个匹配桶最后记录在桶结束前，可能不是最终值；这与已剔除的最新时间桶不同。完整配置报告提供“桶结束后保存”观察范围，可单独核对。</section>';
+const stamp=f=>{let s=fs.readFileSync(f,'utf8').replace(/<section id="normalization-note"[\s\S]*?<\/section>/,'').replace(/<section id="uw-save-note"[\s\S]*?<\/section>/,'');fs.writeFileSync(f,s.replace(/(<main[^>]*>)/,'$1'+banner+qualityNote));};
+stamp(file);const result=V.generate(file,dir);stamp(dir+'/frozen-validation.html');
+fs.writeFileSync(dir+'/time-normalization-audit.json',JSON.stringify({normalization:n,latestChecked:u.latest.length,revisionsChecked:u.revisions.length,rawFieldsPreserved:true},null,2));
+console.log(JSON.stringify({window:result.window,excluded:result.excluded,all:result.all,quality:result.quality,missed:result.rows.filter(r=>r.decision.keep&&r.error>.1).map(r=>({start:r.start,ticker:r.ticker,strike:r.strike,right:r.right,error:r.error}))},null,2));

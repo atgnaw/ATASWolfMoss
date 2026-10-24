@@ -2,11 +2,14 @@ using System.Reflection;
 using System.Runtime.Loader;
 using WolfMoss.ATAS.DrawingSync;
 
-internal static class Program
+internal static partial class Program
 {
     private static int _passed;
     private static readonly LineState A = new(22000m, 0xFFCCAA44, 2, 0, "test", 12, 0, false);
     private static readonly LineState B = A with { Price = 22001.25m, Text = "edited", Width = 3 };
+    private static readonly RectangleState Rect = new(new DateTime(2026, 10, 16, 14, 30, 0),
+        new DateTime(2026, 10, 16, 15, 45, 0), 22000m, 22025.25m, 0xFF00AAFF, 2, 0,
+        0x553399FF, 6, "区域", 1, 1, false, true, new(true, 0xFFAA66CC, 3, 1));
 
     [STAThread]
     private static int Main()
@@ -15,8 +18,11 @@ internal static class Program
         {
             EngineTests();
             UnlinkTests();
+            RectangleTests();
+            ReleaseEngineTests();
             JournalTests();
             HubTests();
+            SchedulerTests();
             NativeTests();
             Console.WriteLine($"RESULT {_passed} checks passed. No running ATAS chart was modified.");
             return 0;
@@ -39,8 +45,8 @@ internal static class Program
 
     private sealed class World
     {
-        public Dictionary<string, LineState> L = [];
-        public Dictionary<string, LineState> R = [];
+        public Dictionary<string, DrawingState> L = [];
+        public Dictionary<string, DrawingState> R = [];
         public HashSet<string> ExtraL = [];
         public HashSet<string> ExtraR = [];
         public HashSet<string> LocalL = [];
@@ -220,6 +226,39 @@ internal static class Program
         Check(journal.Length == 0, "old journal after unlink persistence failure cleans up without recreating mirror");
     }
 
+    private static void RectangleTests()
+    {
+        var w = new World(); w.L["line"] = A; w.L["rect"] = Rect; w.Step();
+        var rectPair = w.Saved.Single(x => x.Kind == DrawingKind.Rectangle);
+        Check(w.Engine.PairCount == 2 && w.R[rectPair.Right] == Rect, "rectangle and horizontal line coexist with distinct persisted kinds");
+        w.Step(); Check(w.Edits.Count == 0, "unchanged rectangles never echo");
+        var middleEdited = Rect with { MiddleLine = new(false, 0xFF44AA22, 5, 2) };
+        w.R[rectPair.Right] = middleEdited; w.Step();
+        Check(w.L["rect"] == middleEdited && w.Edits.Single().ToLeft,
+            "middle-line-only micro changes propagate enable color width and style without moving rectangle");
+        w.L["rect"] = Rect; w.Step();
+        Check(w.R[rectPair.Right] == Rect, "middle-line-only mini change restores enabled state in reverse direction");
+        w.Step(); Check(w.Edits.Count == 0, "middle line synchronization converges without echo");
+        var edited = Rect with { FirstTime = Rect.FirstTime.AddMinutes(-5), SecondTime = Rect.SecondTime.AddMinutes(15),
+            FirstPrice = 21990m, SecondPrice = 22030m, AreaColor = 0x4400FF00, Text = "调整", ExtendRight = false };
+        w.R[rectPair.Right] = edited; w.Step();
+        Check(w.L["rect"] == edited && w.L["line"] == A, "reverse rectangle move resize fill and text edit leaves horizontal line untouched");
+        w.Engine = w.New(); w.R.Remove(rectPair.Right); w.Step();
+        Check(w.R[rectPair.Right] == edited && w.Edits.Single().State is RectangleState, "reconnect repairs rectangle with its saved kind and exact time anchors");
+        w.L.Remove("rect"); w.LocalL.Add("rect"); w.Step();
+        Check(!w.R.ContainsKey(rectPair.Right) && w.Engine.PairCount == 1 && w.Engine.WaitingPairs == 0 && w.LocalL.Contains("rect"),
+            "rectangle Global off removes only its mirror and preserves horizontal pair");
+        w.LocalL.Clear(); w.L["rect"] = edited; w.Step();
+        var newPair = w.Saved.Single(x => x.Kind == DrawingKind.Rectangle);
+        Check(w.R[newPair.Right] == edited && w.Engine.PairCount == 2, "rectangle Global re-enabled creates one new mirror");
+        w.R.Remove(newPair.Right); w.Step();
+        Check(!w.L.ContainsKey("rect") && w.Engine.PairCount == 1, "micro rectangle deletion propagates without deleting horizontal lines");
+        w.R[newPair.Right] = edited; w.Step();
+        Check(w.L["rect"] == edited, "rectangle undo restores matching type");
+        w.R[newPair.Right] = A; w.Step();
+        Check(w.Edits.Count == 0 && w.Engine.WaitingPairs == 1 && w.L["rect"] == edited, "unexpected rectangle-to-line ID type change is suspended rather than overwritten");
+    }
+
     private static void JournalTests()
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "test-data", Guid.NewGuid().ToString("N"));
@@ -231,12 +270,16 @@ internal static class Program
             Throws(() => { using var duplicate = new PairJournal("scope", directory); }, "second process/session cannot claim same journal");
             journal.Save([new("a", "b"), new("c", "d")]);
             Check(journal.Load().Count == 2, "atomic journal replacement");
-            journal.Save([new("a", "b", true), new("c", "d")]);
+            journal.Save([new("a", "b", true, DrawingKind.Rectangle), new("c", "d")]);
             Check(journal.Load()[0].GlobalPair && !journal.Load()[1].GlobalPair, "global-pair confirmation persists alongside legacy bindings");
+            Check(journal.Load()[0].Kind == DrawingKind.Rectangle && journal.Load()[1].Kind == DrawingKind.HorizontalLine,
+                "rectangle kind round-trips while old bindings remain horizontal lines");
+            journal.Save([.. journal.Load(), new("ray", "ray-peer", true, DrawingKind.HorizontalRay), new("trend", "trend-peer", true, DrawingKind.TrendLine)]);
+            Check(journal.Load().Select(b => b.Kind).Distinct().Count() == 4, "all four drawing kind IDs survive actual JSON journal round trip");
         }
         using (var journal = new PairJournal("scope", directory))
         {
-            Check(journal.Load().Count == 2, "journal can reopen after clean release");
+            Check(journal.Load().Count == 4, "journal can reopen after clean release");
             File.WriteAllText(Directory.GetFiles(directory, "*.json").Single(), "{broken");
             Throws(() => journal.Load(), "corrupt journal fails closed");
         }
@@ -244,7 +287,7 @@ internal static class Program
         Directory.Delete(directory);
     }
 
-    private sealed class FakeBridge(InstrumentKey instrument, Dictionary<string, LineState> shared) : ISyncBridge
+    private sealed class FakeBridge(InstrumentKey instrument, Dictionary<string, DrawingState> shared) : ISyncBridge
     {
         private static int _nextChartId;
         public int ChartId { get; } = Interlocked.Increment(ref _nextChartId);
@@ -252,11 +295,13 @@ internal static class Program
         public int ThreadId => Environment.CurrentManagedThreadId;
         public object Core { get; } = new();
         public int Writes;
+        public int Reads;
+        public bool SharesInstrumentSnapshot { get; set; }
         public bool Ready = true;
         public bool Reading = true;
         public HashSet<string> LocalIds = [];
         public void CheckReady() { if (!Ready) throw new InvalidOperationException("loading"); }
-        public ChartSnapshot? Read() => Reading ? new(new(shared), shared.Keys.Concat(LocalIds).ToHashSet(), new(LocalIds)) : null;
+        public ChartSnapshot? Read() { Reads++; return Reading ? new(new(shared), shared.Keys.Concat(LocalIds).ToHashSet(), new(LocalIds)) : null; }
         public void Apply(Edit edit)
         {
             Writes++;
@@ -269,9 +314,9 @@ internal static class Program
     private static void HubTests()
     {
         var directory = Path.Combine(AppContext.BaseDirectory, "test-data", Guid.NewGuid().ToString("N"));
-        var hub = new SyncHub(directory);
-        var l = new Dictionary<string, LineState>();
-        var r = new Dictionary<string, LineState>();
+        var hub = new SyncHub(directory, intervalMilliseconds: 0);
+        var l = new Dictionary<string, DrawingState>();
+        var r = new Dictionary<string, DrawingState>();
         var mini = InstrumentKey.Create("ES", default, "ES.CME", "ES", true, false, "ES", true);
         var micro = InstrumentKey.Create("MES", default, "MES.CME", "MES", true, false, "MES", true);
         var statuses = new Dictionary<Guid, string>();
@@ -351,6 +396,12 @@ internal static class Program
             Check(r.Count == 0 && ((FakeBridge)es2.Bridge).LocalIds.Contains("new-global") &&
                 statuses[es1.Id].Contains("配对 0") && !statuses[es1.Id].Contains("暂挂"),
                 "Global off on non-representative chart propagates unlink through merged multi-chart snapshots");
+            l["rect"] = Rect; TickAll();
+            Check(r.Values.Single() == Rect && statuses[es1.Id].Contains("配对 1"), "multi-chart group creates one rectangle mirror");
+            var rectId = r.Keys.Single(); r[rectId] = Rect with { SecondPrice = 22100m }; TickAll();
+            Check(l["rect"] == r[rectId], "multi-chart rectangle resize propagates in reverse");
+            r.Clear(); ((FakeBridge)reopenedAgain.Bridge).LocalIds.Add(rectId); TickAll();
+            Check(!l.ContainsKey("rect") && statuses[es1.Id].Contains("配对 0"), "multi-chart rectangle unlink removes shared opposite rectangle");
         }
         finally
         {
@@ -410,14 +461,14 @@ internal static class Program
         var stored = ((System.Collections.IEnumerable)R.Call(store, "Get", "NQZ6-test", "NQ", 12345)!).Cast<object>().ToArray();
         Check(stored.Length == 1 && ReferenceEquals(stored[0], nativeLine), "native collection inserts completed local HLine into actual store");
         Check(!((System.Collections.IEnumerable)R.Call(store, "Get", "MNQZ6-test", "MNQ", 54321)!).Cast<object>().Any(), "native storage keeps instrument/chart identities isolated");
-        Check(NativeBridge.Snapshot(stored, line).Lines.Count == 0, "production filter excludes native non-global horizontal line");
+        Check(NativeBridge.Snapshot(stored, line).Objects.Count == 0, "production filter excludes native non-global horizontal line");
         Check(NativeBridge.StoreIds(store).Contains("probe-test-id"), "global existence guard recognizes local peer even when its chart is not participating");
         R.Set(nativeLine, "IsGlobal", true);
         var otherChart = ((System.Collections.IEnumerable)R.Call(store, "Get", "NQZ6-test", "NQ", 98765)!).Cast<object>().ToArray();
         Check(otherChart.Length == 1 && ReferenceEquals(otherChart[0], nativeLine), "actual native Global object visible on a second chart without cloning");
-        Check(NativeBridge.Snapshot(otherChart, line).Lines.Count == 1, "production filter accepts Global owned by a different chart ID");
+        Check(NativeBridge.Snapshot(otherChart, line).Objects.Count == 1, "production filter accepts Global owned by a different chart ID");
         R.Set(nativeLine, "IsUnderCursor", true);
-        Check(NativeBridge.Snapshot(otherChart, line).Lines.Count == 0 && NativeBridge.Snapshot(otherChart, line).AllIds.Contains("probe-test-id"), "unfinished Global stays identifiable but cannot be copied or treated as deletion");
+        Check(NativeBridge.Snapshot(otherChart, line).Objects.Count == 0 && NativeBridge.Snapshot(otherChart, line).AllIds.Contains("probe-test-id"), "unfinished Global stays identifiable but cannot be copied or treated as deletion");
         R.Set(nativeLine, "IsUnderCursor", false);
         R.Call(nativeCollection, "AddCache", nativeLine);
         NativeBridge.WriteLine(nativeLine, A);
@@ -426,7 +477,7 @@ internal static class Program
         Check(NativeBridge.ReadLine(stored[0]) == A, "native cache/save retains edited line state");
         R.Call(store, "DeleteChart", 12345);
         var reopenedChart = ((System.Collections.IEnumerable)R.Call(store, "Get", "NQZ6-test", "NQ", 22222)!).Cast<object>().ToArray();
-        Check(reopenedChart.Length == 1 && NativeBridge.Snapshot(reopenedChart, line).Lines.Count == 1, "actual native Global survives closing its originating chart and is readable after reopen");
+        Check(reopenedChart.Length == 1 && NativeBridge.Snapshot(reopenedChart, line).Objects.Count == 1, "actual native Global survives closing its originating chart and is readable after reopen");
         var nativeMirror = Activator.CreateInstance(line)!;
         R.Set(nativeMirror, "Id", "probe-micro-id");
         R.Set(nativeMirror, "IsUnderCursor", false);
@@ -454,11 +505,93 @@ internal static class Program
             NativeRead("MNQZ6-test", "MNQ", 44444).Length == 0 && unlink.PairCount == 0,
             "real native store unlink preserves current-chart local line and removes all other-chart views and micro mirror");
         R.Set(nativeLine, "IsUnderCursor", true);
-        Check(!NativeBridge.IsLocalLine(nativeLine, line), "unfinished local HLine cannot trigger mirror deletion");
+        Check(!NativeBridge.IsLocalObject(nativeLine, line), "unfinished local HLine cannot trigger mirror deletion");
         R.Set(nativeLine, "IsUnderCursor", false);
         R.Method(collection, "Delete", 1, line).Invoke(nativeCollection, [nativeLine]);
         Check(!((System.Collections.IEnumerable)R.Call(store, "Get", "NQZ6-test", "NQ", 12345)!).Cast<object>().Any(), "native individual delete removes only test object");
+        NativeRectangleTests(assembly, store, collection, line);
+        NativeReleaseTests(assembly, store, collection);
         Throws(() => NativeBridge.ValidateAssembly(typeof(Program).Assembly), "unsupported assembly version blocked");
+    }
+
+    private static void NativeRectangleTests(Assembly assembly, object store, Type collection, Type line)
+    {
+        var rectangle = assembly.GetType("OFT.Platform.DrawingObjects.RectangleObj", true)!;
+        NativeBridge.ValidateRectangleShape(rectangle);
+        Check(rectangle.GetConstructor([assembly.GetType("OFT.Platform.ViewModels.Charting.ChartCore", true)!]) is not null,
+            "native RectangleObj metadata and ChartCore constructor match adapter");
+        object Make(string id, string root, int chartId, DrawingState state)
+        {
+            var obj = Activator.CreateInstance(rectangle)!;
+            R.Set(obj, "IsUnderCursor", false); R.Set(obj, "AutoSetSecondPos", false);
+            R.Set(obj, "IsGlobal", true); R.Set(obj, "Id", id);
+            R.Set(obj, "InstrumentName", root); R.Set(obj, "InstrumentUniqName", root + "Z6-test");
+            NativeBridge.WriteObject(obj, state);
+            R.Call(Activator.CreateInstance(collection, store, chartId)!, "AddGlobalDrawingObject", obj, false, false);
+            return obj;
+        }
+        object[] Read(string root, int chart) => ((System.Collections.IEnumerable)R.Call(store, "Get", root + "Z6-test", root, chart)!).Cast<object>().ToArray();
+        var original = Make("rectangle-source", "NQ", 100, Rect);
+        Check(NativeBridge.ReadObject(original) == Rect, "native rectangle time price border fill text and extension round trip");
+        R.Set(original, "FirstPos", 999); R.Set(original, "SecondPos", 1000);
+        NativeBridge.WriteObject(original, Rect with { FirstTime = Rect.FirstTime.AddMinutes(-1) });
+        Check(R.Value<int>(original, "FirstPos") == 999 && R.Value<int>(original, "SecondPos") == 1000,
+            "rectangle adapter uses native timestamps without copying obsolete chart bar indices");
+        NativeBridge.WriteObject(original, Rect);
+        R.Set(original, "AutoSetSecondPos", true);
+        var pending = NativeBridge.Snapshot(Read("NQ", 100), line, rectangle);
+        Check(pending.Objects.Count == 0 && pending.AllIds.Contains("rectangle-source"), "rectangle awaiting second corner is suspended without deletion");
+        R.Set(original, "AutoSetSecondPos", false);
+        R.Set(original, "_firstTime", default(DateTime));
+        Check(NativeBridge.Snapshot(Read("NQ", 100), line, rectangle).Objects.Count == 0, "rectangle missing time anchor is not copied");
+        NativeBridge.WriteObject(original, Rect);
+        Throws(() => NativeBridge.WriteObject(original, A), "native rectangle cannot be overwritten by horizontal line payload");
+        Binding[] saved = [];
+        var engine = new SyncEngine([], b => saved = b.ToArray());
+        void Apply(Edit edit)
+        {
+            var root = edit.ToLeft ? "NQ" : "MNQ";
+            var chartId = edit.ToLeft ? 100 : 200;
+            var nativeCollection = Activator.CreateInstance(collection, store, chartId)!;
+            if (edit.Kind == EditKind.Create) { Make(edit.Id, root, chartId, edit.State!); return; }
+            var obj = Read(root, chartId).Single(x => R.Value<string>(x, "Id") == edit.Id);
+            if (edit.Kind == EditKind.Delete) R.Method(collection, "Delete", 1, rectangle).Invoke(nativeCollection, [obj]);
+            else
+            {
+                R.Call(nativeCollection, "AddCache", obj); NativeBridge.WriteObject(obj, edit.State!);
+                var array = Array.CreateInstance(rectangle, 1); array.SetValue(obj, 0);
+                R.Call(nativeCollection, "SaveDrawingObjects", array);
+            }
+        }
+        void Step() => engine.Step(NativeBridge.Snapshot(Read("NQ", 100), line, rectangle),
+            NativeBridge.Snapshot(Read("MNQ", 200), line, rectangle), Apply);
+        Step(); var mirrored = Read("MNQ", 200).Single();
+        Check(NativeBridge.ReadObject(mirrored) == Rect && Read("MNQ", 201).Single() == mirrored && Read("NQ", 101).Single() == original,
+            "real native store shares exactly one rectangle per instrument across multiple charts");
+        var originalFilter = R.Get(original, "MiddleLine");
+        var mirrorFilter = R.Get(mirrored, "MiddleLine");
+        Check(!ReferenceEquals(originalFilter, mirrorFilter) && !ReferenceEquals(R.Get(originalFilter, "Value"), R.Get(mirrorFilter, "Value")),
+            "mirrored rectangles never share mutable native middle-line settings");
+        var frozen = NativeBridge.ReadRectangle(mirrored);
+        var changedMiddle = new MiddleLineState(false, 0x8844CC22, 5, 2);
+        NativeBridge.WriteMiddleLine(mirrored, changedMiddle);
+        Check(frozen.MiddleLine == Rect.MiddleLine && NativeBridge.ReadMiddleLine(original) == Rect.MiddleLine,
+            "editing native middle line leaves frozen snapshot and opposite object unchanged until reconciliation");
+        Step();
+        Check(NativeBridge.ReadRectangle(original) == Rect with { MiddleLine = changedMiddle } && saved.Length == 1,
+            "real native middle-line-only edit synchronizes all four properties without recreating rectangle");
+        NativeBridge.WriteMiddleLine(original, changedMiddle with { Enabled = true }); Step();
+        Check(NativeBridge.ReadMiddleLine(mirrored) == changedMiddle with { Enabled = true },
+            "real native middle line toggle from mini synchronizes back to micro");
+        var disabled = changedMiddle with { Enabled = false, Color = 0xFFEE1155, Width = 2, Style = 0 };
+        NativeBridge.WriteMiddleLine(original, disabled); Step();
+        Check(NativeBridge.ReadMiddleLine(mirrored) == disabled, "disabled middle-line style remains synchronized for later re-enable");
+        NativeBridge.WriteObject(mirrored, Rect with { SecondPrice = 22123.25m, AreaOpacity = 3, Text = "micro edited" }); Step();
+        Check(NativeBridge.ReadObject(original) == NativeBridge.ReadObject(mirrored), "native rectangle resize and style save propagate in reverse");
+        R.Set(mirrored, "IsGlobal", false); R.Set(mirrored, "ChartId", 200); Step();
+        Check(Read("NQ", 100).Length == 0 && Read("MNQ", 201).Length == 0 && Read("MNQ", 200).Single() == mirrored && saved.Length == 0,
+            "native rectangle Global off preserves local rectangle and removes all other chart views");
+        R.Method(collection, "Delete", 1, rectangle).Invoke(Activator.CreateInstance(collection, store, 200), [mirrored]);
     }
 }
 
@@ -472,3 +605,6 @@ public class EmptyProxy : DispatchProxy
         return type.IsValueType ? Activator.CreateInstance(type) : null;
     }
 }
+
+
+

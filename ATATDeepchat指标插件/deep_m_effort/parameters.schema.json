@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deep-M Effort (NQ)",
+  "description": "成交 Delta、实体 tick 位移与撮合耗时的连续段区域指标；包含独立 EMA 与区域外观参数。按图表的柱计算，原版用于 NQ 的 Range 40 图，默认参数按它而定。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "minDeltaPercent": {
+      "type": "number", "minimum": 0, "maximum": 100, "default": 10,
+      "title": "最小 Delta 占比（%）",
+      "description": "主动买量减主动卖量的绝对值占总成交量的百分比下限；包含边界，0 关闭下限。"
+    },
+    "maxDeltaPercent": {
+      "type": "number", "minimum": 0, "maximum": 100, "default": 40,
+      "title": "最大 Delta 占比（%）",
+      "description": "Delta 占比上限；包含边界，0 关闭上限。上下限都启用时上限不能小于下限。"
+    },
+    "maxDeltaEffort": {
+      "type": "number", "minimum": 0, "maximum": 1000000, "default": 14,
+      "title": "最大 Effort 绝对值",
+      "description": "Delta 除以实体 tick 数加 1，整数除法向零截断后比较；0 关闭此过滤。"
+    },
+    "maxTimeSeconds": {
+      "type": "integer", "minimum": 0, "maximum": 86400000, "default": 45,
+      "title": "最大撮合耗时（秒）",
+      "description": "下一真实柱首笔撮合时刻减本柱首笔撮合时刻，截断为整数秒；0 关闭。无下一柱不强制结算区域。"
+    },
+    "minimumBars": {
+      "type": "integer", "minimum": 1, "maximum": 4096, "default": 2,
+      "title": "最少连续柱数",
+      "description": "同方向连续满足条件达到此数量后记住区间，后续柱打断连续段时才创建区域。"
+    },
+    "emaLength": {
+      "type": "integer", "minimum": 1, "maximum": 4096, "default": 20,
+      "title": "EMA 长度",
+      "description": "独立显示，不过滤区域。采用原规则延后初始化，长度 20 时第 22 根已收柱的收盘价为首值。"
+    },
+    "maxZoneExtensions": {
+      "type": "integer", "minimum": 1, "maximum": 4096, "default": 20,
+      "title": "区域最长延展（柱索引跨度）",
+      "description": "达到跨度上限或原规则价格停止条件后冻结；为保证宿主每回调预算，不提供无限延展。"
+    },
+    "fullRangeMaxBars": {
+      "type": "integer", "minimum": 0, "maximum": 4096, "default": 1,
+      "title": "全区间最多段长（柱）",
+      "description": "已完成连续段不长于此值时取全部高低区间；更长段按区域百分比截取方向相关部分。"
+    },
+    "entryZonePercent": {
+      "type": "number", "minimum": 0, "maximum": 100, "default": 50,
+      "title": "区间裁剪百分比（%）",
+      "description": "长段上行区域从最高价下移此比例，保留下方部分；下行区域从最低价上移此比例，保留上方部分。50 表示半区间。"
+    },
+    "bullishColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4278255360,
+      "x-color-format": "argb", "title": "上涨区域颜色", "description": "默认 Lime。轮廓使用 ARGB，填充透明度由独立参数决定。"
+    },
+    "bearishColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4286584296,
+      "x-color-format": "argb", "title": "下跌区域颜色", "description": "默认 RGB(128,21,232)。轮廓使用 ARGB，填充透明度独立设置。"
+    },
+    "fillAlpha": {
+      "type": "integer", "minimum": 0, "maximum": 255, "default": 125,
+      "title": "区域填充 Alpha", "description": "0 全透明，255 不透明；默认 125 与反编译代码实际绘图常量一致。"
+    },
+    "zoneWidth": {
+      "type": "number", "minimum": 1, "maximum": 20, "default": 1,
+      "title": "区域轮廓宽度（DIP）", "description": "只改变轮廓，不改变价格范围或停止条件。"
+    },
+    "showEma": {
+      "type": "boolean", "default": true, "title": "显示 EMA", "description": "关闭只隐藏均线和读数，不改变区域算法。"
+    },
+    "emaColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4294922834,
+      "x-color-format": "argb", "title": "EMA 颜色", "description": "移植版独立外观参数，不参与信号判断。"
+    },
+    "emaWidth": {
+      "type": "number", "minimum": 1, "maximum": 20, "default": 1,
+      "title": "EMA 线宽（DIP）", "description": "标准折线的逻辑像素宽度。"
+    }
+  }
+}

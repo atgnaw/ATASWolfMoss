@@ -6,9 +6,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>FootprintOutline</AssemblyName>
     <RootNamespace>WolfMoss.ATAS.FootprintOutline</RootNamespace>
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
     <Authors>WolfMoss</Authors>
-    <Description>ATAS Volume Profile closed staircase outline, custom proportion mode.</Description>
+    <Description>ATAS Volume Profile closed staircase outline with custom and visible-region proportion modes.</Description>
     <ATASInstallDir Condition="'$(ATASInstallDir)' == ''">C:\Program Files (x86)\ATAS Platform</ATASInstallDir>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

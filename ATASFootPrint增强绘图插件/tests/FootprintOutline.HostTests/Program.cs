@@ -44,12 +44,12 @@ public static class Program
         var source=new CandlePartSeries(creator,DataSeriesType.Close);
         var chartMode=ChartVisualModes.Clusters;
         var footprintMode=FootprintVisualModes.VolumeHistogram;
-        var barWidth=100m;var rowHeight=6m;var yShift=0;var first=0;
+        var barWidth=100m;var rowHeight=6m;var yShift=0;var first=0;var visibleLast=int.MaxValue;
         var container=Proxy.Make<IChartContainer>((m,a)=>m.Name switch {
             "get_Region"=>new Rectangle(20,20,700,500),
             "get_High"=>120m+yShift, "get_Low"=>90m+yShift, "get_Step"=>0.25m,
             "get_PriceRowHeight"=>rowHeight, "get_BarsWidth"=>barWidth, "get_BarSpacing"=>10m,
-            "get_FirstVisibleBarNumber"=>first, "get_LastVisibleBarNumber"=>candles.Count-1,
+            "get_FirstVisibleBarNumber"=>first, "get_LastVisibleBarNumber"=>Math.Min(visibleLast,candles.Count-1),
             "get_TotalBars"=>candles.Count, "get_GetVisibleBarsCount"=>candles.Count,
             "GetXByBar"=>100+(int)a![0]!*110,
             "GetYByPrice"=>300-(int)(((decimal)a![0]!-100m)/0.25m*rowHeight)+yShift,
@@ -110,11 +110,58 @@ public static class Program
         Check(context.Paths.Count==1&&ReferenceEquals(retainedPath,context.Paths[0]),"Horizontal scroll retains overlapping bar geometry");
         first=2;Draw();Check(context.Paths.Count==0,"Empty visible range is handled");
 
+        // Independent candles distinguish regional scaling from per-candle normalization.
+        var regionalLevels=new List<List<PriceVolumeInfo>> {
+            new(){new(){Price=100,Volume=100}},
+            new(){new(){Price=100,Volume=200}},
+            new(){new(){Price=100,Volume=1000}}
+        };
+        candles.Clear();
+        foreach(var rows in regionalLevels)
+        {
+            var provider=Proxy.Make<ISupportedPriceInfo>((m,a)=>m.Name=="GetAllPriceLevels"?rows:Proxy.Default(m.ReturnType));
+            candles.Add(new IndicatorCandle(provider,parent,0.25m));
+        }
+        void Reload()=>typeof(BaseIndicator).GetMethod("RecalculateValues",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)!.Invoke(indicator,null);
+        int Width(int path)=>context.Paths[path].Max(p=>p.X)-context.Paths[path].Min(p=>p.X);
+        first=0;barWidth=100;rowHeight=6;yShift=0;Reload();
+        indicator.CustomProportion=0;indicator.ProportionMode=OutlineProportionMode.VisibleRegion;Draw();
+        Check(context.Texts.Count==0&&context.Paths.Count==3&&Width(0)==8&&Width(1)==17&&Width(2)==89,"Visible mode works without manual proportion and uses one regional maximum");
+        var regionalPath=context.Paths[0];for(var i=0;i<1000;i++) Draw();
+        Check(ReferenceEquals(regionalPath,context.Paths[0]),"Visible mode mouse repaints retain geometry");
+        visibleLast=1;Draw();
+        Check(context.Paths.Count==2&&Width(0)==44&&Width(1)==89,"Removing the regional maximum by scrolling rescales remaining candles");
+        visibleLast=2;Draw();
+        Check(Width(0)==8,"Re-entering high-volume candle restores regional scale");
+        indicator.VisibleRegionPercentile=50;Draw();
+        Check(Width(0)==44&&Width(1)==89&&Width(2)==89,"Percentile uses nearest-rank candle maxima and clips wider rows");
+        indicator.VisibleRegionPercentile=100;
+        regionalLevels[2][0].Volume=2000;calculate.Invoke(indicator,new object[]{2,0m});Draw();
+        Check(Width(0)==4&&Width(1)==8,"New current-bar maximum rescales historical outlines");
+        regionalPath=context.Paths[0];regionalLevels[1][0].Volume=400;calculate.Invoke(indicator,new object[]{1,0m});Draw();
+        Check(ReferenceEquals(regionalPath,context.Paths[0])&&Width(1)==17,"Non-maximum update preserves other cached outlines");
+        regionalLevels[2][0].Volume=500;calculate.Invoke(indicator,new object[]{2,0m});Draw();
+        Check(Width(0)==17&&Width(1)==71,"Falling regional maximum also rescales history");
+        yShift=200;Draw();Check(Width(0)==17,"Vertical panning does not exclude whole-candle maxima");
+        regionalLevels.Add(new(){new(){Price=100,Volume=4000}});
+        var nextProvider=Proxy.Make<ISupportedPriceInfo>((m,a)=>m.Name=="GetAllPriceLevels"?regionalLevels[3]:Proxy.Default(m.ReturnType));
+        candles.Add(new IndicatorCandle(nextProvider,parent,0.25m));visibleLast=3;Draw();
+        Check(context.Paths.Count==0,"Partial new-bar snapshot waits instead of using incomplete baseline");
+        calculate.Invoke(indicator,new object[]{3,0m});Draw();
+        Check(context.Paths.Count==4&&Width(0)==2,"New candle becomes part of visible baseline after calculation");
+        indicator.ProportionMode=OutlineProportionMode.Custom;Draw();
+        Check(context.Paths.Count==0&&context.Texts.Count==1,"Returning to unconfigured custom mode restores prompt");
+        indicator.CustomProportion=1000;Draw();Check(Width(0)==8,"Returning to custom mode restores manual width rule");
+        indicator.ProportionMode=OutlineProportionMode.VisibleRegion;candles.Clear();Reload();Draw();
+        Check(context.Paths.Count==0,"Visible mode history reset removes cached regional geometry");
+        candles.Add(new IndicatorCandle(priceProvider,parent,0.25m));Reload();Draw();
+        Check(context.Paths.Count==1,"Visible mode history reload rebuilds baseline");
+        indicator.ProportionMode=OutlineProportionMode.Custom;visibleLast=int.MaxValue;
+
         var previewPath=Environment.GetEnvironmentVariable("FOOTPRINT_PREVIEW_PATH");
         if(!string.IsNullOrWhiteSpace(previewPath))
         {
             first=0;barWidth=240;rowHeight=12;yShift=140;levels.Clear();
-            candles.RemoveAt(1);
             var volumes=new decimal[]{30,40,120,320,180,450,800,500,270,90,180,460,1200,850,400,210,110,80,260,650,950,550,300,130,170,400,650,290,150,70,100,60};
             for(var i=0;i<volumes.Length;i++) levels.Add(new PriceVolumeInfo{Price=100+i*0.25m,Volume=volumes[i]});
             typeof(BaseIndicator).GetMethod("RecalculateValues",BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic)!.Invoke(indicator,null);
@@ -125,7 +172,7 @@ public static class Program
             using var titleFont=new Font("Arial",16);
             using var smallFont=new Font("Arial",10);
             using var titleBrush=new SolidBrush(Color.FromArgb(216,222,233));
-            graphics.DrawString("Footprint Outline 1.0.1",titleFont,titleBrush,24,16);
+            graphics.DrawString("Footprint Outline 1.1.0",titleFont,titleBrush,24,16);
             graphics.DrawString("SYNTHETIC DATA - host API test, not a live ATAS screenshot",smallFont,titleBrush,24,550);
             graphics.DrawString("Custom proportion: 1000 | bar width: 240 | marker: auto",smallFont,titleBrush,24,573);
             using var bid=new SolidBrush(Color.FromArgb(174,42,60));

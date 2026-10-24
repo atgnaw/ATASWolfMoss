@@ -1,0 +1,27 @@
+{
+  "name": "Deep-V Tracker",
+  "description": "真实逐笔与分价成交驱动的加速、衰竭、减速、吸收/压力指标；同原版，Range 图按 N 取阈值，其余图表按最近 21 根柱的真实波幅自适应。减速标记可移动或消失。",
+  "defaultConfig": {
+    "acceleration": "medium",
+    "exhaustion": "medium",
+    "slowdown": "medium",
+    "absorption": "medium",
+    "levelMode": "conservative",
+    "projectionBars": 10,
+    "enableAcceleration": true,
+    "enableExhaustion": true,
+    "enableSlowdown": true,
+    "enableLevels": true,
+    "askColor": 4281519410,
+    "bidColor": 4294922834,
+    "exhaustionColor": 4278255615,
+    "slowdownColor": 4294956800,
+    "accelerationColor": 4285098345,
+    "accelerationAlpha": 45,
+    "controlWidth": 2,
+    "extremeWidth": 1,
+    "iconSize": 10,
+    "fontSize": 12,
+    "showLabels": true
+  }
+}

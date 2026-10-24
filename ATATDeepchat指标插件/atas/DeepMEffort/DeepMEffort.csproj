@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>WolfMoss.DeepMEffort</AssemblyName>
+    <RootNamespace>WolfMoss.ATAS.DeepMEffort</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>WolfMoss</Authors>
+    <Description>Deep-M Effort: ATAS port of the supplied C++ calculation rules.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="DeepMEffort.Tests" />
+  </ItemGroup>
+</Project>

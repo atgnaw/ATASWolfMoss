@@ -147,6 +147,89 @@ Test("Concurrent snapshots and price updates", () =>
     Equal(10,s.Count);
 });
 
+Test("Visible percentile uses per-bar maxima, not pooled rows or candle totals", () =>
+{
+    var store = new SnapshotStore();
+    store.Set(0,3,1,[new(100,5),new(101,100)],store.Generation);
+    store.Set(1,3,1,[new(100,1000)],store.Generation);
+    store.Set(2,3,1,[new(100,300)],store.Generation);
+    var visible = store.GetVisible(0,2).ToList();
+    var scale = new VisibleRegionScale();
+    Assert(scale.TryGetValue(visible,0,2,1,100,out var value),"Valid viewport rejected");
+    Equal(1000m,value);
+    scale.TryGetValue(visible,0,2,1,50,out value); Equal(300m,value);
+    scale.TryGetValue(visible,0,2,1,1,out value); Equal(100m,value);
+    scale.TryGetValue(visible,0,2,1,67,out value); Equal(1000m,value);
+});
+Test("Visible scale excludes zero maxima and has native floor of one", () =>
+{
+    var store = new SnapshotStore();
+    store.Set(0,3,1,[],store.Generation);
+    store.Set(1,3,1,[new(100,0.5m)],store.Generation);
+    store.Set(2,3,1,[new(100,200)],store.Generation);
+    var scale = new VisibleRegionScale();
+    scale.TryGetValue(store.GetVisible(0,2).ToList(),0,2,1,50,out var value); Equal(1m,value);
+    scale.TryGetValue(store.GetVisible(0,0).ToList(),0,0,1,100,out value); Equal(1m,value);
+});
+Test("Visible scale follows scrolling and increases or decreases in maxima", () =>
+{
+    var store = new SnapshotStore();
+    for(var i=0;i<3;i++) store.Set(i,3,1,[new(100,(i+1)*100)],store.Generation);
+    var scale = new VisibleRegionScale();
+    scale.TryGetValue(store.GetVisible(0,2).ToList(),0,2,1,100,out var value); Equal(300m,value);
+    scale.TryGetValue(store.GetVisible(0,1).ToList(),0,1,1,100,out value); Equal(200m,value);
+    store.Set(1,3,1,[new(100,900)],store.Generation);
+    scale.TryGetValue(store.GetVisible(0,1).ToList(),0,1,1,100,out value); Equal(900m,value);
+    store.Set(1,3,1,[new(100,20)],store.Generation);
+    scale.TryGetValue(store.GetVisible(0,1).ToList(),0,1,1,100,out value); Equal(100m,value);
+});
+Test("Partial history and stale aggregation cannot produce a visible baseline", () =>
+{
+    var store = new SnapshotStore();
+    store.Set(0,2,1,[new(100,50)],store.Generation);
+    var scale = new VisibleRegionScale();
+    Assert(!scale.TryGetValue(store.GetVisible(0,1).ToList(),0,1,1,100,out _),"Partial history accepted");
+    store.Set(1,2,2,[new(100,500)],store.Generation);
+    Assert(!scale.TryGetValue(store.GetVisible(0,1).ToList(),0,1,1,100,out _),"Mixed steps accepted");
+    scale.Clear();store.Clear();
+    Assert(!scale.TryGetValue(store.GetVisible(0,1).ToList(),0,1,1,100,out _),"Cleared history accepted");
+    store.Set(0,1,2,[new(100,75)],store.Generation);
+    Assert(scale.TryGetValue(store.GetVisible(0,0).ToList(),0,0,2,100,out var value),"Reload failed");
+    Equal(75m,value);
+});
+Test("Visible percentile matches independent sorted nearest-rank reference", () =>
+{
+    var random = new Random(7318);
+    for(var iteration=0;iteration<100;iteration++)
+    {
+        var count=random.Next(1,100);var store=new SnapshotStore();var maxima=new List<decimal>();
+        for(var i=0;i<count;i++)
+        {
+            var volume=random.Next(0,10)*10m;
+            store.Set(i,count,1,[new(100,volume)],store.Generation);
+            if(volume>0) maxima.Add(volume);
+        }
+        maxima.Sort();var visible=store.GetVisible(0,count-1).ToList();var scale=new VisibleRegionScale();
+        foreach(var percentile in new[]{1,25,50,90,99,100})
+        {
+            var expected=maxima.Count==0?1m:Math.Max(1m,maxima[(int)Math.Ceiling(maxima.Count*percentile/100m)-1]);
+            Assert(scale.TryGetValue(visible,0,count-1,1,percentile,out var actual),"Reference viewport rejected");
+            Equal(expected,actual);
+        }
+    }
+});
+Test("Visible percentile mouse repaints allocate zero bytes after warmup", () =>
+{
+    var store=new SnapshotStore();
+    for(var i=0;i<200;i++) store.Set(i,200,1,[new(100,i+1)],store.Generation);
+    var visible=store.GetVisible(0,199).ToList();var scale=new VisibleRegionScale();
+    // Warm tiered JIT and generic tuple comparisons before measuring steady state.
+    for(var i=0;i<10_000;i++) scale.TryGetValue(visible,0,199,1,90,out _);
+    var before=GC.GetAllocatedBytesForCurrentThread();
+    for(var i=0;i<10_000;i++) scale.TryGetValue(visible,0,199,1,90,out _);
+    Equal(0L,GC.GetAllocatedBytesForCurrentThread()-before);
+});
+
 void CheckRaster(Rectangle[] rectangles, Point[][] paths)
 {
     bool Filled(double x,double y)=>rectangles.Any(r=>x>r.Left&&x<r.Right&&y>r.Top&&y<r.Bottom);

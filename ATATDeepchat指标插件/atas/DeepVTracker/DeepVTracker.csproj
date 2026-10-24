@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>WolfMoss.DeepVTracker</AssemblyName>
+    <RootNamespace>WolfMoss.ATAS.DeepVTracker</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>WolfMoss</Authors>
+    <Description>Deep-V Tracker for ATAS, ported from the supplied C++ implementation.</Description>
+  </PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="DeepVTracker.Tests" /></ItemGroup>
+</Project>

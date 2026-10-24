@@ -18,7 +18,7 @@ function summarize(trades){
   outsideVolume:rate(t=>/OVERRIDE$/.test(t.reason)),insideVolume:rate(t=>/^INSIDE_/.test(t.reason)),
   invalidNextVolume:rate(t=>/INVALID/.test(t.branch)),cumulativeReversals:reversals};
 }
-async function build(days=Research.loadSources()){
+async function build(days=Research.loadSources(),options={}){
  const out={version:2,createdUtc:new Date().toISOString(),scope:'AllTimeAndSales',scenario:'Latest/Midpoint/-1',outside:true,sourceFiles:[],buckets:[]};
  for(const d of days){
   const pairs=new Map(d.pairs.map((p,i)=>[p.key,{p,i}])),raw=new Map(),trades=new Map(d.pairs.map(p=>[p.key,[]]));
@@ -60,7 +60,7 @@ async function build(days=Research.loadSources()){
     }
     return {mode,ageMs,counts,atQuote,switchedVolume,switchedEvents,largestChanges:changes.sort((a,b)=>b.size-a.size).slice(0,4)};
    }));
-   out.buckets.push({day:d.day,key,label:`${p.start}–${p.end} ${p.ticker} ${p.strike} ${p.right}`,ticker:p.ticker,counts,features,reasonVolumes,largest,staleModels});
+   out.buckets.push({day:d.day,key,label:`${p.start}–${p.end} ${p.ticker} ${p.strike} ${p.right}`,ticker:p.ticker,counts,features,reasonVolumes,largest,staleModels,...(options.includeTrades?{trades:ts}:{})});
   }
  }
  return out;

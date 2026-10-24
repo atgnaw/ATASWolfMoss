@@ -1,0 +1,22 @@
+{
+  "name": "Deep-M Effort (NQ)",
+  "description": "按成交 Delta、实体 tick 位移与撮合时间筛选连续段，段结束后标注价格区域；含原规则 EMA。原版用于 NQ 的 Range 40 图，不自动交易。",
+  "defaultConfig": {
+    "minDeltaPercent": 10,
+    "maxDeltaPercent": 40,
+    "maxDeltaEffort": 14,
+    "maxTimeSeconds": 45,
+    "minimumBars": 2,
+    "emaLength": 20,
+    "maxZoneExtensions": 20,
+    "fullRangeMaxBars": 1,
+    "entryZonePercent": 50,
+    "bullishColor": 4278255360,
+    "bearishColor": 4286584296,
+    "fillAlpha": 125,
+    "zoneWidth": 1,
+    "showEma": true,
+    "emaColor": 4294922834,
+    "emaWidth": 1
+  }
+}

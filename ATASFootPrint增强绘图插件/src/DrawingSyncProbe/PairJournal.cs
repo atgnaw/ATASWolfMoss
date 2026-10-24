@@ -28,7 +28,8 @@ public sealed class PairJournal : IDisposable
         if (!File.Exists(_path)) return [];
         var doc = JsonSerializer.Deserialize<Document>(File.ReadAllText(_path))
             ?? throw new InvalidDataException("配对文件为空。");
-        if (doc.Version != 1 || doc.Scope != _scope || doc.Bindings is null || doc.Bindings.Length > SyncEngine.MaxLivePairs + SyncEngine.UndoHistoryLimit)
+        // A crash during a batch can leave old unlink mappings alongside new write-ahead pairs.
+        if (doc.Version != 1 || doc.Scope != _scope || doc.Bindings is null || doc.Bindings.Length > 2 * SyncEngine.MaxLivePairs + SyncEngine.UndoHistoryLimit)
             throw new InvalidDataException("配对文件版本或作用域不匹配。");
         return doc.Bindings;
     }

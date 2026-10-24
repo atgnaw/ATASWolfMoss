@@ -4,8 +4,12 @@
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.2.2</Version>
+    <Version>1.0.0</Version>
     <AssemblyName>WolfMoss.DrawingSyncProbe</AssemblyName>
+    <!-- Keep assembly/type identity so existing ATAS workspaces load the release in place. -->
+    <Product>WolfMoss Drawing Sync</Product>
+    <Title>Drawing Sync / 微型合约绘图同步</Title>
+    <Description>Global drawing synchronization for ES/MES and NQ/MNQ.</Description>
     <ATASInstallDir Condition="'$(ATASInstallDir)' == ''">C:\Program Files (x86)\ATAS Platform</ATASInstallDir>
   </PropertyGroup>
   <ItemGroup>

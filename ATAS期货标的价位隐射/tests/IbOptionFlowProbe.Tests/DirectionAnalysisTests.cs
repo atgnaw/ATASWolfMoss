@@ -10,6 +10,50 @@ internal static class DirectionAnalysisTests
     private static void Check(bool ok, string why = "direction assertion failed") { if (!ok) throw new Exception(why); }
     public static async Task RunAsync(Func<string, Func<Task>, Task> test)
     {
+        await test("Farm recovery retains only explicit same-subscription realtime metadata", () =>
+        {
+            var f = new Fixture(); var g = new FarmRecovery();
+            var confirmed = f.Raw(0, "marketDataType", type: 1);
+            g.Observe(confirmed); g.Disconnect();
+            Check(!g.Observe(f.Raw(1, "tickPrice", 1, "1")), "blocked before 2104");
+            Check(g.Reconnect()); Check(g.Observe(f.Raw(2, "tickPrice", 1, "1")));
+            Check(!g.Observe(f.Raw(3, "tickPrice", 2, "2")), "restore once only");
+            foreach (var type in new[] { 0, 2, 3, 4 })
+            {
+                g.Clear(); g.Observe(confirmed with { MarketDataType = type }); g.Disconnect(); g.Reconnect();
+                Check(!g.Observe(f.Raw(4, "tickPrice", 1, "1")), "non realtime cannot recover");
+            }
+            g.Clear(); g.Observe(confirmed); g.Disconnect(); g.Observe(f.Raw(5, "tickPrice", 66, "1")); g.Reconnect();
+            Check(!g.Observe(f.Raw(6, "tickPrice", 1, "1")), "delayed callback revokes recovery");
+            g.Clear(); g.Observe(confirmed); g.Disconnect(); g.Reconnect();
+            Check(!g.Observe(f.Raw(7, "tickPrice", 1, "1") with { RequestId = 2 }), "new request cannot inherit");
+            g.Clear(); g.Observe(confirmed); g.Disconnect(); g.Clear(); g.Reconnect();
+            Check(!g.Observe(f.Raw(8, "tickPrice", 1, "1")), "hard break cannot inherit");
+            return Task.CompletedTask;
+        });
+        await test("Both analyzers recover after 2104 using fresh quotes only", () =>
+        {
+            var f = new Fixture(); f.Ready(); f.Send(0,"tickSize",0,"10"); f.Send(0,"tickSize",3,"10");
+            f.Trade(100,100,100,2); f.Trade(200,200,101,2);
+            f.Apply(f.Raw(300,"error") with { ErrorCode = 2103 });
+            f.Quote(310,1,1); f.Quote(310,2,2); f.Send(310,"tickSize",0,"10"); f.Send(310,"tickSize",3,"10");
+            f.Trade(320,320,102,2); var blocked=f.Trade(330,330,103,2);
+            Check(blocked.Matches.Single(x=>x.ScenarioId=="Latest/Midpoint/-1").Reason=="NOT_CONFIRMED_REALTIME");
+            f.Apply(f.Raw(400,"error") with { ErrorCode = 2104 });
+            f.Quote(410,1,1); f.Send(410,"tickSize",0,"10");
+            f.Trade(420,420,104,2); var incomplete=f.Trade(430,430,105,2);
+            Check(incomplete.Matches.Single(x=>x.ScenarioId=="Latest/Midpoint/-1").Sign==0, "pre-recovery ask cannot leak");
+            f.Quote(440,2,2); f.Send(440,"tickSize",3,"10");
+            var recovered=f.Trade(450,450,106,2);
+            Check(recovered.Matches.Single(x=>x.ScenarioId=="Latest/Midpoint/-1").Sign==1);
+            Check(f.Legacy.Diagnostics["REALTIME_SUBSCRIPTION_RESTORED"]==1);
+            Check(f.Finish().Diagnostics["REALTIME_SUBSCRIPTION_RESTORED"]==1);
+            f.Apply(f.Raw(500,"connectionClosed")); f.Apply(f.Raw(510,"error") with { ErrorCode = 2104 });
+            f.Quote(520,1,1); f.Quote(520,2,2); f.Send(520,"tickSize",0,"10"); f.Send(520,"tickSize",3,"10");
+            f.Trade(530,530,107,2); var hard=f.Trade(540,540,108,2);
+            Check(hard.Matches.Single(x=>x.ScenarioId=="Latest/Midpoint/-1").Reason=="NOT_CONFIRMED_REALTIME");
+            return Task.CompletedTask;
+        });
         await test("Mid categories conserve premium without entering unknown reasons", () =>
         {
             var a = new DirectionAmounts(); a.Add(0,20,"LOCKED_QUOTE"); a.Add(0,10,"MIDPOINT_UNKNOWN");

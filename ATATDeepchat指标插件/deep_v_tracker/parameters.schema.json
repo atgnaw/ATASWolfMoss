@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deep-V Tracker",
+  "description": "四类逐笔成交形态；同原版，吸收 / 压力与减速的阈值按图表分两套：Range 图由 N 定出，其余图表按最近 21 根柱的真实波幅自适应。未知主动方向会停用相关方向判断。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "acceleration": {
+      "x-enum-titles": ["弱", "中", "强"],
+      "type": "string", "enum": ["weak", "medium", "strong"], "default": "medium",
+      "title": "加速强度", "description": "约一秒成交桶的峰值阈值分别为均值加 3.25 / 4.75 / 6.5 倍样本标准差。"
+    },
+    "exhaustion": {
+      "x-enum-titles": ["弱", "中", "强"],
+      "type": "string", "enum": ["weak", "medium", "strong"], "default": "medium",
+      "title": "衰竭强度", "description": "滚动窗口分别为 5 / 8 / 10 根已收柱；并行检查成交量及成交记录计数，不等同于独立订单数。"
+    },
+    "slowdown": {
+      "x-enum-titles": ["弱", "中", "强"],
+      "type": "string", "enum": ["weak", "medium", "strong"], "default": "medium",
+      "title": "减速强度", "description": "检查区间边缘三档单侧成交量；当前标记会移动、翻向或消失。"
+    },
+    "absorption": {
+      "x-enum-titles": ["弱", "中", "强"],
+      "type": "string", "enum": ["weak", "medium", "strong"], "default": "medium",
+      "title": "吸收 / 压力强度", "description": "Weak / Medium 用收盘确认离开区间；Strong 改用 High / Low，同时调整量能门槛。"
+    },
+    "levelMode": {
+      "x-enum-titles": ["保守", "中等", "积极"],
+      "type": "string", "enum": ["conservative", "medium", "aggressive"], "default": "conservative",
+      "title": "水平线位置模式", "description": "Conservative 用 POC 和维护边界；Medium 用 POC 和价值区边界；Aggressive 改用初始实体边界。"
+    },
+    "projectionBars": {
+      "type": "integer", "minimum": 1, "maximum": 1024, "default": 10,
+      "title": "水平线最大延展（柱索引跨度）", "description": "达到跨度或实体严格穿越后停止延展；加速区域固定使用原规则的 12。"
+    },
+    "enableAcceleration": {
+      "type": "boolean", "default": true, "title": "启用加速", "description": "启用成交桶峰值检测与区域记录，改变时重建。"
+    },
+    "enableExhaustion": {
+      "type": "boolean", "default": true, "title": "启用衰竭", "description": "启用成交量与成交记录计数两套衰竭检测，改变时重建。"
+    },
+    "enableSlowdown": {
+      "type": "boolean", "default": true, "title": "启用减速", "description": "启用局部分价边缘检测，改变时重建。"
+    },
+    "enableLevels": {
+      "type": "boolean", "default": true, "title": "启用吸收 / 压力线", "description": "启用 AC / AE / PC / PE 水平线发布，改变时重建。"
+    },
+    "askColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4281519410,
+      "x-color-format": "argb", "title": "正 Delta 颜色", "description": "水平线的正方向颜色；不影响计算。"
+    },
+    "bidColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4294922834,
+      "x-color-format": "argb", "title": "负 Delta 颜色", "description": "水平线的负方向颜色；不影响计算。"
+    },
+    "exhaustionColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4278255615,
+      "x-color-format": "argb", "title": "衰竭颜色", "description": "实心三角表示成交量检测，空心三角表示成交记录计数检测。"
+    },
+    "slowdownColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4294956800,
+      "x-color-format": "argb", "title": "减速颜色", "description": "较粗的空心三角；标记可在后续事件中更新。"
+    },
+    "accelerationAlpha": {
+      "type": "integer", "minimum": 0, "maximum": 255, "default": 45,
+      "title": "加速区域填充 Alpha", "description": "0 全透明，255 不透明；属于移植版外观参数。"
+    },
+    "accelerationColor": {
+      "type": "integer", "minimum": 0, "maximum": 4294967295, "default": 4285098345,
+      "x-color-format": "argb", "title": "加速区域颜色", "description": "默认 DimGray；不参与方向与成交量判断。"
+    },
+    "controlWidth": {
+      "type": "number", "minimum": 0, "maximum": 10, "default": 2,
+      "title": "控制线宽（DIP）", "description": "AC / PC 线宽，0 隐藏线与标签；A 为虚线，P 为实线。"
+    },
+    "extremeWidth": {
+      "type": "number", "minimum": 0, "maximum": 10, "default": 1,
+      "title": "极值线宽（DIP）", "description": "AE / PE 线宽，0 隐藏线与标签；不再乘显示器缩放比例。"
+    },
+    "iconSize": {
+      "type": "number", "minimum": 4, "maximum": 40, "default": 10,
+      "title": "形态符号尺寸（DIP）", "description": "衰竭和减速三角形尺寸；不改变价格锚点。"
+    },
+    "fontSize": {
+      "type": "number", "minimum": 6, "maximum": 32, "default": 12,
+      "title": "标签字号（DIP）", "description": "水平线标签使用宿主字体。"
+    },
+    "showLabels": {
+      "type": "boolean", "default": true, "title": "显示水平线标签", "description": "只影响 AC / AE / PC / PE 文字，隐藏后仍可悬停查看。"
+    }
+  }
+}

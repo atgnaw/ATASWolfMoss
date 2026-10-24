@@ -6,7 +6,7 @@ internal sealed class TraceStorageException(string message) : IOException(messag
 
 internal static class AnalysisRunner
 {
-    public static async Task<(string Directory, AnalysisReport Report)> RunAsync(string directory, LargeTradeSettings? largeTrades = null)
+    public static async Task<(string Directory, AnalysisReport Report)> RunAsync(string directory, LargeTradeSettings? largeTrades = null, string? outputRoot = null)
     {
         largeTrades ??= new(); largeTrades.Validate();
         directory = Path.GetFullPath(directory);
@@ -29,7 +29,7 @@ internal static class AnalysisRunner
         var direction = new DirectionAnalyzer(manifest.MonotonicFrequency, summary?.CaptureStartedUtc ?? manifest.CreatedUtc, end, false, largeTrades);
         var outside = new DirectionAnalyzer(manifest.MonotonicFrequency, summary?.CaptureStartedUtc ?? manifest.CreatedUtc, end, true, largeTrades);
         void BreakDirection(string reason, DateTime? at = null) { direction.Break(reason, at); outside.Break(reason, at); }
-        var output = Path.Combine(directory, "analysis-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
+        var output = Path.Combine(outputRoot ?? directory, "analysis-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(output);
         await using var trace = new TraceWriter(output);
         var pendingTrace = new Queue<TradeDecision>();
@@ -94,7 +94,7 @@ internal static class AnalysisRunner
         warnings.Add("总体稳健度仅是条件性压力测试，不是方向正确概率；源时间偏移为预设实验假设，不是测得的网络延迟。报价一致可能来自同一状态，不算独立证据。");
         warnings.Add("前后报价合并＋有限等待：50/100/200/400 毫秒内第一次价格变化后的报价，与前报价取最低 Bid、最高 Ask 组成模拟报价后分类；不再比较两次方向是否一致。模拟报价可能从未同时存在于市场。超时仅用前报价，中断未等满则未知；旧即时规则不变。");
         warnings.Add($"条件式大单对齐：QQQ ≥{largeTrades.QqqContracts} 张，SPX ≥{largeTrades.SpxContracts} 张。普通成交只用接收时最新报价；大单最多等 50 ms，第一次价格更新无效立即回退前报价，不再寻找后续报价；到期无后报价也回退前报价。前报价无效或等待中断仍未知。同买/同卖/同中性取一致结果，否则用前后最低 Bid、最高 Ask 合并分类。未知不算一致；无效报价不被修复。阈值是实验参数，不是大单行业标准。");
-        var report = new AnalysisReport(3, "0.9.2", manifest.RunId, manifest.Synthetic, integrity, conclusion,
+        var report = new AnalysisReport(3, "0.9.3", manifest.RunId, manifest.Synthetic, integrity, conclusion,
             warnings.ToArray(), engine.RawEvents, engine.TradeCallbacks, engine.AcceptedTrades, engine.Boundaries,
             engine.Diagnostics, totals, engine.Rows().Where(x => x.IntervalMinutes > 0).ToArray())
             { Robustness = direction.Finish(engine.Rows(), integrity), OutsideQuoteRobustness = outside.Finish(engine.Rows(), integrity) };
