@@ -7,12 +7,14 @@ using System.Windows.Media;
 
 namespace WolfMoss.ATAS.DrawingSync;
 
-/// <summary>Version-gated adapter. No native runtime type is linked into the indicator's public API.</summary>
+/// <summary>Capability-checked adapter; unfamiliar versions warn without blocking synchronization.</summary>
 internal sealed class NativeBridge : ISyncBridge
 {
     private const string CoreName = "OFT.Platform.ViewModels.Charting.ChartCore";
     private const string LineName = "OFT.Platform.DrawingObjects.HLine";
-    private const string SupportedVersion = "8.0.15.304";
+    internal static string? VersionWarning(string? version) => version is "8.0.15.304" or "8.0.15.306" ? null
+        : $"版本警告：ATAS {version ?? "未知"} 尚未经本插件验证，继续同步；如接口不兼容将停止";
+    public string? CompatibilityWarning { get; }
     private readonly object _core;
     private readonly object _data;
     private readonly object _objects;
@@ -50,7 +52,7 @@ internal sealed class NativeBridge : ISyncBridge
     {
         _core = core;
         _thread = Environment.CurrentManagedThreadId;
-        ValidateAssembly(core.GetType().Assembly);
+        CompatibilityWarning = GetVersionWarning(core.GetType().Assembly);
         _adapters = DrawingAdapters.For(core.GetType().Assembly);
         _data = R.Get(core, "Data");
         _objects = R.Get(_data, "DrawingObjects");
@@ -71,12 +73,8 @@ internal sealed class NativeBridge : ISyncBridge
         R.Method(_data.GetType(), "RaiseUpdateDrawingObjectsState", 0);
     }
 
-    internal static void ValidateAssembly(Assembly assembly)
-    {
-        var version = FileVersionInfo.GetVersionInfo(assembly.Location).FileVersion;
-        if (version != SupportedVersion)
-            throw new NotSupportedException($"仅适配 ATAS {SupportedVersion}，当前 {version}；已停止同步。");
-    }
+    internal static string? GetVersionWarning(Assembly assembly) =>
+        VersionWarning(FileVersionInfo.GetVersionInfo(assembly.Location).FileVersion);
 
     internal static object FindStore(object collection)
     {

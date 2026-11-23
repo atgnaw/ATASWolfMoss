@@ -423,8 +423,8 @@ internal static partial class Program
             return File.Exists(path) ? AssemblyLoadContext.Default.LoadFromAssemblyPath(path) : null;
         };
         var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(directory, "OFT.Platform.Core.dll"));
-        NativeBridge.ValidateAssembly(assembly);
-        Check(true, "installed native assembly version matches adapter");
+        Console.WriteLine("Installed ATAS: " + System.Diagnostics.FileVersionInfo.GetVersionInfo(assembly.Location).FileVersion);
+        Check(NativeBridge.GetVersionWarning(assembly) is null, "installed ATAS version is in tested baseline");
         var line = assembly.GetType("OFT.Platform.DrawingObjects.HLine", true)!;
         NativeBridge.ValidateLineShape(line);
         Check(true, "actual native HLine has all required mutable members");
@@ -511,7 +511,11 @@ internal static partial class Program
         Check(!((System.Collections.IEnumerable)R.Call(store, "Get", "NQZ6-test", "NQ", 12345)!).Cast<object>().Any(), "native individual delete removes only test object");
         NativeRectangleTests(assembly, store, collection, line);
         NativeReleaseTests(assembly, store, collection);
-        Throws(() => NativeBridge.ValidateAssembly(typeof(Program).Assembly), "unsupported assembly version blocked");
+        Check(NativeBridge.GetVersionWarning(typeof(Program).Assembly)?.Contains("继续同步") == true, "unrecognized assembly version warns without throwing");
+        Check(NativeBridge.VersionWarning("8.0.15.304") is null && NativeBridge.VersionWarning("8.0.15.306") is null,
+            "both tested ATAS versions accepted");
+        Check(NativeBridge.VersionWarning("9.0.0.999")?.Contains("继续同步") == true && NativeBridge.VersionWarning(null) is not null,
+            "future and unknown versions are warnings rather than version gates");
     }
 
     private static void NativeRectangleTests(Assembly assembly, object store, Type collection, Type line)

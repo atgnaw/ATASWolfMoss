@@ -105,7 +105,9 @@ public sealed class DrawingSyncIndicator : Indicator
                         _bridge = new(core);
                         _bridgeRevision = revision;
                     }
-                    SyncHub.Shared.Tick(new(_id, _bridge, group, Active, SetStatus, () => RedrawChart()));
+                    var warning = _bridge.CompatibilityWarning;
+                    SyncHub.Shared.Tick(new(_id, _bridge, group, Active,
+                        status => SetStatus(warning is null ? status : status + " | " + warning), () => RedrawChart()));
                 }
                 catch (Exception ex)
                 {
@@ -136,7 +138,7 @@ public sealed class DrawingSyncIndicator : Indicator
         var chart = ChartInfo;
         if (!ShowStatus || chart is null || Volatile.Read(ref _disposed) != 0) return;
         var region = chart.PriceChartContainer.Region;
-        context.DrawString("Drawing Sync 1.0.0 | " + Volatile.Read(ref _status), chart.PriceAxisFont,
+        context.DrawString("Drawing Sync 1.0.1 | " + Volatile.Read(ref _status), chart.PriceAxisFont,
             _enabled ? Color.Gold : Color.Gray, region.Left + 8, region.Top + Math.Clamp(StatusOffset, 0, 1000));
     }
 
